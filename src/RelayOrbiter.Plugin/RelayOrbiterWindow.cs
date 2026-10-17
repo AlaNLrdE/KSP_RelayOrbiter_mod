@@ -8,25 +8,25 @@ using Body = RelayOrbiter.Core.CelestialBody;
 
 namespace RelayOrbiter.Plugin
 {
-    // IMGUI window: pick a body and a target altitude, show the deployment plan.
+    // IMGUI window (flight only): target altitude around the body the active vessel
+    // orbits, the deployment plan, and the Maneuvers and Automation tabs.
     // All orbital logic lives in RelayOrbiter.Core; this class only draws state.
     internal sealed class RelayOrbiterWindow
     {
         private const int   WindowId = 0x52454C41;  // "RELA"
-        private const float Width    = 460f;
+        private const float Width    = 440f;
         private const float LabelW   = 230f;
 
         private readonly IBodyDatabase            _db;
         private readonly IAltitudePlanner         _planner;
         private readonly IConstellationCalculator _calculator;
         private readonly Func<double, string>     _formatTime;
-        private readonly ManeuversPanel?          _maneuvers;  // null outside flight
-        private readonly AutomationPanel?         _automation; // null outside flight
-        private readonly List<(Body body, int depth)> _bodyTree;
+        private readonly ManeuversPanel           _maneuvers;
+        private readonly AutomationPanel          _automation;
+        private readonly Action                   _onClose;
 
         private Rect    _rect = new Rect(240f, 120f, Width, 200f);
-        private Vector2 _bodyScroll;
-        private Body    _body;
+        private Body?   _body;  // the body the active vessel orbits
         private AltitudeSource _source = AltitudeSource.Synchronous;
         private int     _child, _midA, _midB = 1;
         private string  _customKm = "1000";
@@ -36,8 +36,8 @@ namespace RelayOrbiter.Plugin
 
         public RelayOrbiterWindow(IBodyDatabase db, IAltitudePlanner planner,
                                   IConstellationCalculator calculator,
-                                  Func<double, string> formatTime, string? initialBody,
-                                  ManeuversPanel? maneuvers, AutomationPanel? automation)
+                                  Func<double, string> formatTime,
+                                  ManeuversPanel maneuvers, AutomationPanel automation, Action onClose)
         {
             _db         = db;
             _planner    = planner;
@@ -45,93 +45,95 @@ namespace RelayOrbiter.Plugin
             _formatTime = formatTime;
             _maneuvers  = maneuvers;
             _automation = automation;
-            _bodyTree   = BuildTree();
-            _body       = (initialBody != null ? _db.Find(initialBody) : null) ?? _bodyTree[0].body;
+            _onClose    = onClose;
         }
 
         public bool Visible { get; set; }
 
         // Runs the automation every frame, even while the window is hidden.
-        public void Tick()  => _automation?.Tick();
-        public void Abort() => _automation?.Abort();
+        public void Tick()  => _automation.Tick();
+        public void Abort() => _automation.Abort();
+
         public Rect Rect => _rect;
+        public Vector2 Position { get => _rect.position; set => _rect.position = value; }
+        public int Tab { get => _tab; set => _tab = Mathf.Clamp(value, 0, 2); }
 
         public void Draw()
         {
             if (_ok == null) CreateStyles();
-            _rect = GUILayout.Window(WindowId, _rect, DrawContents, "Relay Orbiter — 3-satellite constellation",
-                                     GUILayout.Width(Width));
+            _rect = GUILayout.Window(WindowId, _rect, DrawContents, "Relay Orbiter", GUILayout.Width(Width));
         }
 
         // ── Layout ────────────────────────────────────────────────────────────
 
         private void DrawContents(int id)
         {
-            DrawBodySelector();
-            GUILayout.Space(6f);
+            if (GUI.Button(new Rect(_rect.width - 22f, 3f, 18f, 16f), "×")) _onClose();
 
-            var option = DrawAltitudeSelector();
-            GUILayout.Space(6f);
-
-            Action<string> selectBody = name => { var b = _db.Find(name); if (b != null) SelectBody(b); };
-            if (_maneuvers != null && _automation != null)
+            if (!FollowActiveVessel())
             {
-                if (_automation.IsRunning) _tab = 2;
-                _tab = GUILayout.Toolbar(_tab, new[] { "Results", "Maneuvers", "Automation" });
+                GUILayout.Label("No active vessel.", _warn);
+                GUI.DragWindow();
+                return;
             }
+            var body = _body!;
 
-            if (_maneuvers != null && _tab == 1)
-                _maneuvers.Draw(_body, option != null && option.IsValid ? option.Altitude : (double?)null, selectBody);
-            else if (_automation != null && _tab == 2)
-                _automation.Draw(_body, selectBody);
+            var option = DrawAltitudeSelector(body);
+            GUILayout.Space(6f);
+
+            if (_automation.IsRunning) _tab = 2;
+            _tab = GUILayout.Toolbar(_tab, new[] { "Results", "Maneuvers", "Automation" });
+
+            if (_tab == 1)
+                _maneuvers.Draw(body, option != null && option.IsValid ? option.Altitude : (double?)null);
+            else if (_tab == 2)
+                _automation.Draw(body);
             else if (option == null) { }
-            else if (!option.IsValid) GUILayout.Label(StatusText(option), _warn);
-            else                      DrawResult(_calculator.Calculate(_body, option.Altitude));
+            else if (!option.IsValid) GUILayout.Label(StatusText(body, option), _warn);
+            else                      DrawResult(_calculator.Calculate(body, option.Altitude));
 
             GUI.DragWindow();
         }
 
-        private void DrawBodySelector()
+        // Track the body the active vessel orbits (it changes with the SOI).
+        private bool FollowActiveVessel()
         {
-            GUILayout.Label("Body", _header);
-            _bodyScroll = GUILayout.BeginScrollView(_bodyScroll, GUILayout.Height(130f));
-            foreach (var (body, depth) in _bodyTree)
+            var vessel = FlightGlobals.ActiveVessel;
+            if (vessel == null) return false;
+            string name = GameBodyDatabase.NameOf(vessel.mainBody);
+            if (_body == null || _body.Name != name)
             {
-                GUILayout.BeginHorizontal();
-                GUILayout.Space(16f * depth);
-                bool selected = body.Name == _body.Name;
-                if (GUILayout.Toggle(selected, body.Name, GUI.skin.button) && !selected)
-                    SelectBody(body);
-                GUILayout.EndHorizontal();
+                _body = _db.Find(name);
+                _child = 0; _midA = 0; _midB = 1;
             }
-            GUILayout.EndScrollView();
+            return _body != null;
         }
 
-        private AltitudeOption? DrawAltitudeSelector()
+        private AltitudeOption? DrawAltitudeSelector(Body body)
         {
-            GUILayout.Label($"Target altitude above {_body.Name}{AtmHint()}", _header);
+            GUILayout.Label($"Orbiting {body.Name}{AtmHint(body)} — target altitude", _header);
 
-            var kids = _db.ChildrenOf(_body.Name);
+            var kids = _db.ChildrenOf(body.Name);
             var sources = new List<AltitudeSource> { AltitudeSource.Synchronous };
             if (kids.Count >= 1) sources.Add(AltitudeSource.Child);
             if (kids.Count >= 2) sources.Add(AltitudeSource.Midpoint);
             sources.Add(AltitudeSource.Custom);
             if (!sources.Contains(_source)) _source = AltitudeSource.Synchronous;
 
-            string childWord = _body.Parent == null ? "planet" : "moon";
+            string childWord = body.Parent == null ? "planet" : "moon";
             var labels = sources.Select(s => SourceLabel(s, childWord)).ToArray();
             _source = sources[GUILayout.Toolbar(sources.IndexOf(_source), labels)];
 
             switch (_source)
             {
                 case AltitudeSource.Synchronous:
-                    var sync = _planner.Synchronous(_body);
+                    var sync = _planner.Synchronous(body);
                     Row("Synchronous orbit", Km(sync.Altitude));
                     return sync;
 
                 case AltitudeSource.Child:
                 {
-                    var options = _planner.Children(_body);
+                    var options = _planner.Children(body);
                     _child = Mathf.Clamp(_child, 0, options.Count - 1);
                     _child = GUILayout.SelectionGrid(_child, options.Select(o => o.Name).ToArray(), 3);
                     Row($"{options[_child].Name}'s orbital altitude", Km(options[_child].Altitude));
@@ -152,7 +154,7 @@ namespace RelayOrbiter.Plugin
                         GUILayout.Label($"Choose two different {childWord}s.", _warn);
                         return null;
                     }
-                    var mid = _planner.Midpoint(_body, kids[_midA], kids[_midB]);
+                    var mid = _planner.Midpoint(body, kids[_midA], kids[_midB]);
                     Row($"Midpoint {kids[_midA].Name} – {kids[_midB].Name}", Km(mid.Altitude));
                     return mid;
                 }
@@ -168,7 +170,7 @@ namespace RelayOrbiter.Plugin
                         GUILayout.Label("Enter a number.", _warn);
                         return null;
                     }
-                    return _planner.Custom(_body, km * 1000.0);
+                    return _planner.Custom(body, km * 1000.0);
                 }
             }
         }
@@ -207,26 +209,8 @@ namespace RelayOrbiter.Plugin
 
         // ── Helpers ───────────────────────────────────────────────────────────
 
-        private void SelectBody(Body body)
-        {
-            _body = body;
-            _child = 0; _midA = 0; _midB = 1;
-        }
-
-        private List<(Body, int)> BuildTree()
-        {
-            var tree = new List<(Body, int)>();
-            void Add(Body b, int depth)
-            {
-                tree.Add((b, depth));
-                foreach (var kid in _db.ChildrenOf(b.Name)) Add(kid, depth + 1);
-            }
-            foreach (var root in _db.All().Where(b => b.Parent == null)) Add(root, 0);
-            return tree;
-        }
-
-        private string AtmHint() =>
-            _body.Atm > 0.0 ? $"  (atmosphere ends at {Km(_body.Atm)})" : "";
+        private static string AtmHint(Body body) =>
+            body.Atm > 0.0 ? $" (atmosphere to {Km(body.Atm)})" : "";
 
         private static string SourceLabel(AltitudeSource s, string childWord) => s switch
         {
@@ -236,13 +220,13 @@ namespace RelayOrbiter.Plugin
             _                          => "Custom",
         };
 
-        private string StatusText(AltitudeOption o) => o.Status switch
+        private static string StatusText(Body body, AltitudeOption o) => o.Status switch
         {
             AltitudeStatus.BelowSurface     => $"{Km(o.Altitude)} is below the surface.",
-            AltitudeStatus.InsideAtmosphere => $"{Km(o.Altitude)} is inside the atmosphere{AtmHint()}.",
+            AltitudeStatus.InsideAtmosphere => $"{Km(o.Altitude)} is inside the atmosphere{AtmHint(body)}.",
             AltitudeStatus.ExceedsSoi       =>
-                $"{Km(o.Altitude)} is beyond {_body.Name}'s sphere of influence " +
-                $"(max {Km((_body.Soi ?? 0.0) - _body.Radius)}). Choose a lower altitude.",
+                $"{Km(o.Altitude)} is beyond {body.Name}'s sphere of influence " +
+                $"(max {Km((body.Soi ?? 0.0) - body.Radius)}). Choose a lower altitude.",
             _ => "",
         };
 

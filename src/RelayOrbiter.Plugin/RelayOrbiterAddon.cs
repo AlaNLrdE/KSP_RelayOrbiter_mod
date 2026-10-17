@@ -5,23 +5,23 @@ using UnityEngine;
 
 namespace RelayOrbiter.Plugin
 {
-    // Composition root: owns the toolbar button and the window, and wires the
-    // core services to the game's bodies.
-    [KSPAddon(KSPAddon.Startup.AllGameScenes, once: false)]
+    // Composition root (flight only): owns the toolbar button and the window, wires
+    // the core services to the game's bodies, and keeps the window's settings.
+    [KSPAddon(KSPAddon.Startup.Flight, once: false)]
     public sealed class RelayOrbiterAddon : MonoBehaviour
     {
         private const string LockId = "RelayOrbiter_WindowLock";
 
         private const ApplicationLauncher.AppScenes Scenes =
-            ApplicationLauncher.AppScenes.SPACECENTER | ApplicationLauncher.AppScenes.FLIGHT |
-            ApplicationLauncher.AppScenes.MAPVIEW     | ApplicationLauncher.AppScenes.TRACKSTATION;
+            ApplicationLauncher.AppScenes.FLIGHT | ApplicationLauncher.AppScenes.MAPVIEW;
 
         private static bool _announced;
         private static Texture2D? _icon;
 
         private ApplicationLauncherButton? _button;
         private RelayOrbiterWindow? _window;
-        private bool _locked;
+        private KSP.IO.PluginConfiguration? _config;
+        private bool _locked, _uiHidden;
 
         private void Start()
         {
@@ -32,6 +32,8 @@ namespace RelayOrbiter.Plugin
             }
             GameEvents.onGUIApplicationLauncherReady.Add(AddButton);
             GameEvents.onGUIApplicationLauncherDestroyed.Add(RemoveButton);
+            GameEvents.onHideUI.Add(OnHideUI);
+            GameEvents.onShowUI.Add(OnShowUI);
             if (ApplicationLauncher.Ready) AddButton();
         }
 
@@ -40,11 +42,17 @@ namespace RelayOrbiter.Plugin
         private void OnDestroy()
         {
             _window?.Abort();  // leaving the scene stops a running deployment
+            SaveSettings();
             GameEvents.onGUIApplicationLauncherReady.Remove(AddButton);
             GameEvents.onGUIApplicationLauncherDestroyed.Remove(RemoveButton);
+            GameEvents.onHideUI.Remove(OnHideUI);
+            GameEvents.onShowUI.Remove(OnShowUI);
             RemoveButton();
             SetLock(false);
         }
+
+        private void OnHideUI() { _uiHidden = true; SetLock(false); }  // F2
+        private void OnShowUI() => _uiHidden = false;
 
         private void AddButton()
         {
@@ -70,32 +78,59 @@ namespace RelayOrbiter.Plugin
         private void HideWindow()
         {
             if (_window != null) _window.Visible = false;
+            SaveSettings();
             SetLock(false);
         }
 
-        private static RelayOrbiterWindow CreateWindow()
+        // The window's × button: same as clicking the toolbar button off.
+        private void CloseWindow()
         {
-            var db        = new GameBodyDatabase(FlightGlobals.Bodies);
-            var mechanics = new OrbitalMechanics();
-            var initial   = GameBodyDatabase.NameOf(FlightGlobals.ActiveVessel != null
-                ? FlightGlobals.ActiveVessel.mainBody
-                : FlightGlobals.GetHomeBody());
-            var altitudes = new AltitudePlanner(db, mechanics);
-            Func<double, string> formatTime = t => KSPUtil.PrintTime(t, 5, false);  // honours the game's calendar
+            if (_button != null) _button.SetFalse(makeCall: true);
+            else HideWindow();
+        }
+
+        private RelayOrbiterWindow CreateWindow()
+        {
+            var db         = new GameBodyDatabase(FlightGlobals.Bodies);
+            var mechanics  = new OrbitalMechanics();
+            var altitudes  = new AltitudePlanner(db, mechanics);
             var deployment = new DeploymentPlanner(mechanics);
-            bool flight = HighLogic.LoadedSceneIsFlight;
-            return new RelayOrbiterWindow(
-                db, altitudes, new ConstellationCalculator(mechanics), formatTime, initial,
-                flight ? new ManeuversPanel(deployment, altitudes, formatTime) : null,
-                flight ? new AutomationPanel(deployment, altitudes, formatTime) : null);
+            Func<double, string> formatTime = t => KSPUtil.PrintTime(t, 5, false);  // honours the game's calendar
+
+            var window = new RelayOrbiterWindow(
+                db, altitudes, new ConstellationCalculator(mechanics), formatTime,
+                new ManeuversPanel(deployment, altitudes, formatTime),
+                new AutomationPanel(deployment, altitudes, formatTime),
+                CloseWindow);
+            LoadSettings(window);
+            return window;
         }
 
         private void OnGUI()
         {
-            if (_window == null || !_window.Visible) return;
-            GUI.skin = HighLogic.Skin;
+            if (_window == null || !_window.Visible || _uiHidden) return;
+            GUI.skin = RelayOrbiterSkin.Get();
             _window.Draw();
             SetLock(_window.Rect.Contains(Event.current.mousePosition));
+        }
+
+        // ── Settings (GameData/RelayOrbiter/Plugins/PluginData/RelayOrbiter/config.xml) ──
+
+        private void LoadSettings(RelayOrbiterWindow window)
+        {
+            _config = KSP.IO.PluginConfiguration.CreateForType<RelayOrbiterAddon>();
+            _config.load();
+            window.Position = new Vector2(_config.GetValue("windowX", 240f), _config.GetValue("windowY", 120f));
+            window.Tab = _config.GetValue("tab", 0);
+        }
+
+        private void SaveSettings()
+        {
+            if (_config == null || _window == null) return;
+            _config.SetValue("windowX", _window.Position.x);
+            _config.SetValue("windowY", _window.Position.y);
+            _config.SetValue("tab", _window.Tab);
+            _config.save();
         }
 
         // Keep clicks and keystrokes over the window from reaching the game.

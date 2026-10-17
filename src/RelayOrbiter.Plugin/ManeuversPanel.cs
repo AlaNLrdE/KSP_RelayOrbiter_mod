@@ -36,8 +36,8 @@ namespace RelayOrbiter.Plugin
             _formatTime = formatTime;
         }
 
-        // selected: body chosen in the window; target: its valid target altitude, if any.
-        public void Draw(Body selected, double? target, Action<string> selectBody)
+        // selected: the body the vessel orbits; target: the window's valid target altitude, if any.
+        public void Draw(Body selected, double? target)
         {
             if (_ok == null) CreateStyles();
 
@@ -45,15 +45,8 @@ namespace RelayOrbiter.Plugin
             if (vessel == null) { Warn("No active vessel."); return; }
 
             var orbit = vessel.orbit;
-            string bodyName = GameBodyDatabase.NameOf(orbit.referenceBody);
-            GUILayout.Label($"{vessel.vesselName} — orbiting {bodyName}", _header);
+            GUILayout.Label(vessel.vesselName, _header);
 
-            if (bodyName != selected.Name)
-            {
-                Warn($"The vessel is orbiting {bodyName}, but {selected.Name} is selected.");
-                if (GUILayout.Button($"Select {bodyName}")) selectBody(bodyName);
-                return;
-            }
             if (vessel.situation != Vessel.Situations.ORBITING)
             {
                 Warn("Get into a stable orbit first (periapsis above the atmosphere, not escaping).");

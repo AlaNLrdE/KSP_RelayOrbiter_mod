@@ -43,7 +43,7 @@ namespace RelayOrbiter.Plugin
         public void Tick()  => _runner?.Tick();
         public void Abort() => _runner?.Abort();
 
-        public void Draw(Body selected, Action<string> selectBody)
+        public void Draw(Body selected)
         {
             if (_ok == null) CreateStyles();
             if (_runner != null) { DrawRunner(); return; }
@@ -51,15 +51,8 @@ namespace RelayOrbiter.Plugin
             var vessel = FlightGlobals.ActiveVessel;
             if (vessel == null) { Warn("No active vessel."); return; }
             var orbit = vessel.orbit;
-            string bodyName = GameBodyDatabase.NameOf(orbit.referenceBody);
-            GUILayout.Label($"Carrier: {vessel.vesselName} — orbiting {bodyName}", _header);
+            GUILayout.Label($"Carrier: {vessel.vesselName}", _header);
 
-            if (bodyName != selected.Name)
-            {
-                Warn($"The vessel is orbiting {bodyName}, but {selected.Name} is selected.");
-                if (GUILayout.Button($"Select {bodyName}")) selectBody(bodyName);
-                return;
-            }
             if (vessel.situation != Vessel.Situations.ORBITING) { Warn("Get into a stable orbit first."); return; }
             if (_altitudes.Validate(selected, orbit.ApA) != AltitudeStatus.Ok) { Warn("The apoapsis is not usable."); return; }
             var solver = vessel.patchedConicSolver;
