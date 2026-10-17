@@ -20,6 +20,7 @@ namespace RelayOrbiter.Plugin
         private readonly IAltitudePlanner         _planner;
         private readonly IConstellationCalculator _calculator;
         private readonly Func<double, string>     _formatTime;
+        private readonly ManeuversPanel?          _maneuvers;  // null outside flight
         private readonly List<(Body body, int depth)> _bodyTree;
 
         private Rect    _rect = new Rect(240f, 120f, Width, 200f);
@@ -28,17 +29,20 @@ namespace RelayOrbiter.Plugin
         private AltitudeSource _source = AltitudeSource.Synchronous;
         private int     _child, _midA, _midB = 1;
         private string  _customKm = "1000";
+        private int     _tab;  // 0 = results, 1 = maneuvers
 
         private GUIStyle? _ok, _warn, _header;
 
         public RelayOrbiterWindow(IBodyDatabase db, IAltitudePlanner planner,
                                   IConstellationCalculator calculator,
-                                  Func<double, string> formatTime, string? initialBody)
+                                  Func<double, string> formatTime, string? initialBody,
+                                  ManeuversPanel? maneuvers)
         {
             _db         = db;
             _planner    = planner;
             _calculator = calculator;
             _formatTime = formatTime;
+            _maneuvers  = maneuvers;
             _bodyTree   = BuildTree();
             _body       = (initialBody != null ? _db.Find(initialBody) : null) ?? _bodyTree[0].body;
         }
@@ -63,7 +67,13 @@ namespace RelayOrbiter.Plugin
             var option = DrawAltitudeSelector();
             GUILayout.Space(6f);
 
-            if (option == null) { }
+            if (_maneuvers != null)
+                _tab = GUILayout.Toolbar(_tab, new[] { "Results", "Maneuvers" });
+
+            if (_maneuvers != null && _tab == 1)
+                _maneuvers.Draw(_body, option != null && option.IsValid ? option.Altitude : (double?)null,
+                                name => { var b = _db.Find(name); if (b != null) SelectBody(b); });
+            else if (option == null) { }
             else if (!option.IsValid) GUILayout.Label(StatusText(option), _warn);
             else                      DrawResult(_calculator.Calculate(_body, option.Altitude));
 

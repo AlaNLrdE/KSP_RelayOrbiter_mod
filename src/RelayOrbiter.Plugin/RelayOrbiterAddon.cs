@@ -1,3 +1,4 @@
+using System;
 using KSP.UI.Screens;
 using RelayOrbiter.Core;
 using UnityEngine;
@@ -76,12 +77,13 @@ namespace RelayOrbiter.Plugin
             var initial   = GameBodyDatabase.NameOf(FlightGlobals.ActiveVessel != null
                 ? FlightGlobals.ActiveVessel.mainBody
                 : FlightGlobals.GetHomeBody());
+            var altitudes = new AltitudePlanner(db, mechanics);
+            Func<double, string> formatTime = t => KSPUtil.PrintTime(t, 5, false);  // honours the game's calendar
+            var maneuvers = HighLogic.LoadedSceneIsFlight
+                ? new ManeuversPanel(new DeploymentPlanner(mechanics), altitudes, formatTime)
+                : null;
             return new RelayOrbiterWindow(
-                db,
-                new AltitudePlanner(db, mechanics),
-                new ConstellationCalculator(mechanics),
-                t => KSPUtil.PrintTime(t, 5, false),  // honours the game's Kerbin/Earth calendar
-                initial);
+                db, altitudes, new ConstellationCalculator(mechanics), formatTime, initial, maneuvers);
         }
 
         private void OnGUI()
