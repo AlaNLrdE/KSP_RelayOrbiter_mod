@@ -38,15 +38,22 @@
     <Copy SourceFiles="@(ModDll)" DestinationFolder="$(ModDir)/Plugins" SkipUnchangedFiles="true" />
   </Target>
 
-  <!-- dotnet build -p:DeployToKsp=true  mirrors GameData/RelayOrbiter into $(KSPDir)/GameData. -->
+  <!-- dotnet build -p:DeployToKsp=true                      mirrors GameData/RelayOrbiter into the test install ($(KSPDir)).
+       dotnet build -p:DeployToKsp=true -p:DeployTarget=main  mirrors it into the main install ($(KSPMainDir)). -->
   <Target Name="DeployToKsp" AfterTargets="StageMod" Condition="'$(DeployToKsp)' == 'true'">
+    <PropertyGroup>
+      <DeployDir Condition="'$(DeployTarget)' == 'main'">$(KSPMainDir)</DeployDir>
+      <DeployDir Condition="'$(DeployTarget)' != 'main'">$(KSPDir)</DeployDir>
+    </PropertyGroup>
+    <Error Condition="'$(DeployDir)' == '' Or !Exists('$(DeployDir)/GameData')"
+           Text="No KSP install at '$(DeployDir)'. Check KSPDir / KSPMainDir in KspPaths.props." />
     <ItemGroup>
       <ModFile Include="$(ModDir)/**/*" />
     </ItemGroup>
     <Copy SourceFiles="@(ModFile)"
-          DestinationFiles="@(ModFile->'$(KSPDir)/GameData/RelayOrbiter/%(RecursiveDir)%(Filename)%(Extension)')"
+          DestinationFiles="@(ModFile->'$(DeployDir)/GameData/RelayOrbiter/%(RecursiveDir)%(Filename)%(Extension)')"
           SkipUnchangedFiles="true" />
-    <Message Importance="high" Text="Deployed RelayOrbiter to $(KSPDir)/GameData/RelayOrbiter" />
+    <Message Importance="high" Text="Deployed RelayOrbiter to $(DeployDir)/GameData/RelayOrbiter" />
   </Target>
 
 </Project>

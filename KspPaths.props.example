@@ -4,5 +4,7 @@
   <PropertyGroup>
     <!-- Test install: compile references come from here, and Deploy copies the mod here. -->
     <KSPDir>/mnt/d/GOG GalaxyGames/KSP/Kerbal Space Program</KSPDir>
+    <!-- Main (play) install: only used with -p:DeployTarget=main. -->
+    <KSPMainDir>/mnt/d/SteamLibrary/steamapps/common/Kerbal Space Program</KSPMainDir>
   </PropertyGroup>
 </Project>
