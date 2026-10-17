@@ -90,7 +90,9 @@ namespace RelayOrbiter.Plugin
             if (_tab == 1)
                 _maneuvers.Draw(body, option != null && option.IsValid ? option.Altitude : (double?)null);
             else if (_tab == 2)
-                _automation.Draw(body);
+                _automation.Draw(body, option != null && option.IsValid ? option.Altitude : (double?)null,
+                                 option == null ? "Enter a valid target altitude."
+                                 : option.IsValid ? null : StatusText(body, option));
             else if (option == null) { }
             else if (!option.IsValid) GUILayout.Label(StatusText(body, option), _warn);
             else

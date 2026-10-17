@@ -17,6 +17,7 @@ namespace RelayOrbiter.Plugin
         private const double MinClearance  = 10.0;  // m between carrier and satellite before switching
         private const double MinTurnDeg    = 60.0;  // carrier turn that moves its end off the satellite's path
         private const double ClearDelay    = 2.0;   // s after release before the carrier starts turning
+        private const double MinNodeLead   = 60.0;  // s: never place a transfer node closer than this
         // KSP unloads orbiting vessels 2.5 km from the active one; switching back to an
         // unloaded carrier reloads the scene and ends the run. Keep it loaded meanwhile.
         private const float  LoadRange     = 22_500f;  // m
@@ -30,6 +31,13 @@ namespace RelayOrbiter.Plugin
         private readonly uint[][] _satellitePartIds;  // every part each release detaches
         private readonly bool _extendPanels, _topUp;
         private readonly ParkingOrbit _parking;  // inner: release at apoapsis; outer: at periapsis
+        private readonly TransferPlanner _transfer;
+        private readonly double _goalRadius;          // target circular orbit radius
+        private readonly double? _goalInclination;    // degrees; null = keep the current plane
+        private bool _skipExecute;                    // the node step found nothing to do
+        private bool _nextNeedsManeuverMode;          // the next node is a plane change
+        private readonly string[]? _satelliteNames;   // null = keep the names they have
+        private int _lastReleased = -1;
         private Vector3 _clearFrom;
         private VesselAutopilot.AutopilotMode? _clearMode;
         private double _clearStart;
@@ -54,6 +62,8 @@ namespace RelayOrbiter.Plugin
         public DeploymentRunner(IReadOnlyList<SequenceStep> steps, Vessel carrier,
                                 uint[] separators, Part[] satelliteParts, string[] names,
                                 uint[][] satellitePartIds, bool extendPanels, bool topUp, ParkingOrbit parking,
+                                TransferPlanner transfer, double goalRadius, double? goalInclination,
+                                string[]? satelliteNames,
                                 IDeploymentPlanner planner, Func<double, string> formatTime)
         {
             _steps          = steps;
@@ -65,6 +75,10 @@ namespace RelayOrbiter.Plugin
             _extendPanels   = extendPanels;
             _topUp          = topUp;
             _parking        = parking;
+            _transfer       = transfer;
+            _goalRadius     = goalRadius;
+            _goalInclination = goalInclination;
+            _satelliteNames = satelliteNames;
             _planner        = planner;
             _formatTime     = formatTime;
 
@@ -149,7 +163,8 @@ namespace RelayOrbiter.Plugin
                 {
                     var o = _carrier.orbit;
                     double apUT = _planner.NextPassUT(now, ReleasePoint.TimeTo(o, _parking), o.period, s.Seconds + 10.0);
-                    if (_index == 0) _parkingUT = apUT;
+                    // The first warp of the deployment (after any transfer) leads to SAT-1's release.
+                    if (double.IsNaN(_parkingUT)) _parkingUT = apUT;
                     _until = apUT - s.Seconds;
                     _warp.Now();
                     break;
@@ -163,10 +178,12 @@ namespace RelayOrbiter.Plugin
                     break;
                 case StepKind.Wait:
                     _until = now + s.Seconds;
+                    NameSatellite(_lastReleased);
                     break;
 
                 case StepKind.ClearSatellite:
                     BeginClear(now, s.Seconds);
+                    NameSatellite(s.Satellite);
                     break;
 
                 case StepKind.SwitchToSatellite:
@@ -188,8 +205,17 @@ namespace RelayOrbiter.Plugin
                     CreateNode(s);
                     break;
 
+                case StepKind.CreateTransferNode:
+                case StepKind.CreateTargetCircularizeNode:
+                case StepKind.CreatePlaneChangeNode:
+                    CreatePreludeNode(s.Kind, now);
+                    break;
+
                 case StepKind.ExecuteNode:
-                    _executor = new NodeExecutor(FlightGlobals.ActiveVessel, _formatTime);
+                    _executor = _skipExecute ? null
+                        : new NodeExecutor(FlightGlobals.ActiveVessel, _formatTime, _nextNeedsManeuverMode);
+                    _skipExecute = false;
+                    _nextNeedsManeuverMode = false;
                     break;
             }
         }
@@ -212,6 +238,7 @@ namespace RelayOrbiter.Plugin
                     if (_carrier.packed) { Status = "Waiting for physics before the release"; return false; }
                     if (_released) return true;
                     _released = true;
+                    _lastReleased = s.Satellite;
                     var part = VesselParts.Find(_carrier, _separators[s.Satellite]);
                     if (part == null || !VesselParts.Release(part))
                     {
@@ -244,7 +271,8 @@ namespace RelayOrbiter.Plugin
 
                 case StepKind.ExecuteNode:
                 {
-                    var r = _executor!.Tick();
+                    if (_executor == null) return true;  // the node step skipped its burn
+                    var r = _executor.Tick();
                     Status = _executor.Status;
                     if (r == NodeExecutor.Result.Failed) Fail(_executor.Error);
                     return r == NodeExecutor.Result.Done;
@@ -342,6 +370,18 @@ namespace RelayOrbiter.Plugin
             if (fill < 0.999) Log($"{Sat(k)}'s tanks are only {fill:P0} full: the carrier has no more fuel for it.");
         }
 
+        // Once released, the satellite is its own vessel: give it its constellation name.
+        private void NameSatellite(int k)
+        {
+            if (_satelliteNames == null || k < 0) return;
+            var sat = _satelliteParts[k].vessel;
+            if (sat == null || sat == _carrier) return;
+            string old = sat.vesselName;
+            sat.vesselName = _satelliteNames[k];
+            sat.vesselType = VesselType.Relay;
+            Log($"Renamed {old} to {sat.vesselName} (relay).");
+        }
+
         // ── Getting clear of a released satellite ────────────────────────────
 
         private void BeginClear(double now, double timeout)
@@ -383,6 +423,98 @@ namespace RelayOrbiter.Plugin
             }
             Status = $"Getting clear: carrier turned {turned:F0}°, {Sat(k)} {distance:F1} m away";
             return false;
+        }
+
+        // ── Reaching the target orbit ────────────────────────────────────────
+
+        private void CreatePreludeNode(StepKind kind, double now)
+        {
+            var o = _carrier.orbit;
+            var solver = _carrier.patchedConicSolver;
+            if (FlightGlobals.ActiveVessel != _carrier || solver == null)
+            {
+                Fail("The carrier must be the active vessel and able to plan maneuver nodes.");
+                return;
+            }
+            double mu = o.referenceBody.gravParameter;
+
+            switch (kind)
+            {
+                case StepKind.CreateTransferNode:
+                {
+                    var t = _transfer.Plan(mu, o.ApR, o.PeR, _goalRadius);
+                    if (!t.Needed) { Skip("Already on the target orbit: no transfer needed."); return; }
+                    double timeTo = t.FirstBurnAt == Apsis.Periapsis ? o.timeToPe : o.timeToAp;
+                    double ut = _planner.NextPassUT(now, timeTo, o.period, MinNodeLead);
+                    AddNode(solver, ut, new Vector3d(0.0, 0.0, t.FirstDv));
+                    Log($"Transfer burn: {t.FirstDv:F1} m/s prograde at {t.FirstBurnAt.ToString().ToLowerInvariant()}.");
+                    break;
+                }
+                case StepKind.CreateTargetCircularizeNode:
+                {
+                    // After the transfer burn the target radius is one of the apsides.
+                    bool atAp = Math.Abs(o.ApR - _goalRadius) <= Math.Abs(o.PeR - _goalRadius);
+                    double r = atAp ? o.ApR : o.PeR;
+                    double ut = _planner.NextPassUT(now, atAp ? o.timeToAp : o.timeToPe, o.period, MinNodeLead);
+                    double dv = _planner.CircularizeAt(mu, r, o.semiMajorAxis);
+                    if (Math.Abs(dv) < 0.1) { Skip("Already circular at the target."); return; }
+                    AddNode(solver, ut, new Vector3d(0.0, 0.0, dv));
+                    Log($"Circularize at the target: {dv:F1} m/s prograde at {(atAp ? "apoapsis" : "periapsis")}.");
+                    break;
+                }
+                case StepKind.CreatePlaneChangeNode:
+                {
+                    if (!_goalInclination.HasValue || !PlaneChange.Needed(o.inclination, _goalInclination.Value))
+                    {
+                        Skip("Already at the target inclination.");
+                        return;
+                    }
+                    var (ut, ascending) = NextNode(o, now);
+                    double speed = o.getOrbitalVelocityAtUT(ut).magnitude;
+                    var (prograde, normal) = PlaneChange.DeltaV(speed, o.inclination, _goalInclination.Value, ascending);
+                    AddNode(solver, ut, new Vector3d(0.0, normal, prograde));
+                    _nextNeedsManeuverMode = true;
+                    Log($"Plane change {o.inclination:F2}° → {_goalInclination.Value:F2}° at the " +
+                        $"{(ascending ? "ascending" : "descending")} node: " +
+                        $"{Math.Sqrt(prograde * prograde + normal * normal):F1} m/s.");
+                    break;
+                }
+            }
+        }
+
+        private void Skip(string why)
+        {
+            _skipExecute = true;
+            Log(why);
+        }
+
+        // The sooner of the ascending and descending nodes (with the equator).
+        private (double ut, bool ascending) NextNode(Orbit o, double now)
+        {
+            double an = NodeUT(o, PlaneChange.NodeTrueAnomalyDeg(o.argumentOfPeriapsis, true), now);
+            double dn = NodeUT(o, PlaneChange.NodeTrueAnomalyDeg(o.argumentOfPeriapsis, false), now);
+            return an <= dn ? (an, true) : (dn, false);
+        }
+
+        // UT of the next passage through a true anomaly given in degrees. Whatever unit
+        // GetUTforTrueAnomaly expects, keep the candidate that is on the equator.
+        private static double NodeUT(Orbit o, double trueAnomalyDeg, double now)
+        {
+            double best = double.NaN, bestLat = double.MaxValue;
+            foreach (double ta in new[] { trueAnomalyDeg * Math.PI / 180.0, trueAnomalyDeg })
+            {
+                double ut = o.GetUTforTrueAnomaly(ta, o.period);
+                while (ut < now + MinNodeLead) ut += o.period;
+                double lat = Math.Abs(o.referenceBody.GetLatitude(o.getPositionAtUT(ut), false));
+                if (lat < bestLat) { bestLat = lat; best = ut; }
+            }
+            return best;
+        }
+
+        private static void AddNode(PatchedConicSolver solver, double ut, Vector3d dv)
+        {
+            var node = solver.AddManeuverNode(ut);
+            node.OnGizmoUpdated(dv, ut);  // x radial, y normal, z prograde
         }
 
         private void CreateNode(SequenceStep s)
@@ -469,7 +601,10 @@ namespace RelayOrbiter.Plugin
             StepKind.SwitchToCarrier       => "Switch back to the carrier",
             StepKind.CreateParkingNode     => "Plan the carrier's parking-orbit burn",
             StepKind.CreateCircularizeNode => $"Plan {Sat(s.Satellite)}'s circularization",
-            StepKind.ExecuteNode           => s.Satellite < 0 ? "Carrier: parking-orbit burn"
+            StepKind.CreateTransferNode          => "Plan the transfer burn to the target orbit",
+            StepKind.CreateTargetCircularizeNode => "Plan the circularization at the target orbit",
+            StepKind.CreatePlaneChangeNode       => "Plan the plane change",
+            StepKind.ExecuteNode           => s.Satellite < 0 ? "Carrier: burn"
                                                               : $"{Sat(s.Satellite)}: circularization burn",
             _ => s.Kind.ToString(),
         };

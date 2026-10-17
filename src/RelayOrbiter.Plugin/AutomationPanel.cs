@@ -17,12 +17,16 @@ namespace RelayOrbiter.Plugin
         // beyond that the switch back would fail.
         private const double MaxSeparation = 15_000.0;  // m
         private const float  LabelW = 230f;
+        private const int    ManeuverSasSkill = 3;  // SAS level that unlocks maneuver mode
 
         private readonly IDeploymentPlanner       _planner;
         private readonly IAltitudePlanner         _altitudes;
         private readonly IConstellationCalculator _calculator;
         private readonly ConstellationSettings    _settings;
+        private readonly TransferPlanner          _transfer;
         private readonly Func<double, string>     _formatTime;
+        private string _inclinationText = "";
+        private bool _inclinationValid = true;
 
         private readonly List<uint> _order = new List<uint>();  // separator flight ids
         private uint _orderVessel;
@@ -34,8 +38,9 @@ namespace RelayOrbiter.Plugin
 
         public AutomationPanel(IDeploymentPlanner planner, IAltitudePlanner altitudes,
                                IConstellationCalculator calculator, ConstellationSettings settings,
-                               Func<double, string> formatTime)
+                               TransferPlanner transfer, Func<double, string> formatTime)
         {
+            _transfer   = transfer;
             _planner    = planner;
             _altitudes  = altitudes;
             _calculator = calculator;
@@ -48,7 +53,8 @@ namespace RelayOrbiter.Plugin
         public void Tick()  => _runner?.Tick();
         public void Abort() => _runner?.Abort();
 
-        public void Draw(Body selected)
+        // target: the window's valid target altitude, if any; targetProblem: why it isn't valid.
+        public void Draw(Body selected, double? target, string? targetProblem)
         {
             if (_ok == null) CreateStyles();
             if (_runner != null) { DrawRunner(); return; }
@@ -102,12 +108,41 @@ namespace RelayOrbiter.Plugin
             if (solver == null) { Warn("Maneuver nodes are not available yet."); return; }
             if (solver.maneuverNodes.Count > 0) { Warn("Delete the vessel's maneuver nodes first (Maneuvers tab)."); return; }
 
+            // ── Target orbit: transfer and plane change before the deployment ──
+            GUILayout.Label("Target orbit", _header);
+            if (!target.HasValue)
+            {
+                Warn((targetProblem ?? "Choose a valid target altitude above.") +
+                     " Pick another one above (Synchronous, At a moon, Midpoint or Custom).");
+                return;
+            }
+            double rGoal = selected.Radius + target.Value;
+            var transfer = _transfer.Plan(selected.Mu, orbit.ApR, orbit.PeR, rGoal);
+            Row("Altitude", Km(target.Value) + (transfer.Needed ? "" : "  (already there)"));
+            DrawInclination(orbit.inclination);
+            bool planeChange = _settings.ChangeInclination &&
+                               PlaneChange.Needed(orbit.inclination, _settings.InclinationDeg);
+            // Change the plane where the carrier is slowest: before lowering, after raising.
+            bool planeFirst = transfer.Needed && rGoal < orbit.semiMajorAxis;
+            double vPlane = Math.Sqrt(selected.Mu / (planeFirst ? orbit.semiMajorAxis : rGoal));
+            var pc = PlaneChange.DeltaV(vPlane, orbit.inclination, _settings.InclinationDeg, ascending: true);
+            double planeDv = planeChange ? Math.Sqrt(pc.prograde * pc.prograde + pc.normal * pc.normal) : 0.0;
+            if (transfer.Needed)
+            {
+                Row("Transfer burn", $"{Ms(Math.Abs(transfer.FirstDv))} {ReleasePoint.Direction(transfer.FirstDv)} " +
+                                     $"at {transfer.FirstBurnAt.ToString().ToLowerInvariant()}");
+                Row("Circularize at target", $"{Ms(Math.Abs(transfer.SecondDv))} {ReleasePoint.Direction(transfer.SecondDv)}");
+            }
+            if (planeChange)
+                Row("Plane change", $"about {Ms(planeDv)} at the next node" + (planeFirst ? ", before the transfer" : ""));
+
             // Inner parking orbit (released at apoapsis) when its periapsis is safe, else outer (periapsis).
-            var parking = _calculator.Recommend(selected, orbit.ApA, n);
+            var parking = _calculator.Recommend(selected, target.Value, n);
             string point = ReleasePoint.Name(parking);
             double now  = Planetarium.GetUniversalTime();
-            double ut   = _planner.NextPassUT(now, ReleasePoint.TimeTo(orbit, parking), orbit.period, 60.0);
-            var plan    = _planner.Plan(selected.Mu, ReleasePoint.Radius(orbit, parking), orbit.semiMajorAxis, ut, n, parking);
+            var plan    = _planner.Plan(selected.Mu, rGoal, rGoal, now, n, parking);
+            double transferTime = transfer.Needed
+                ? Math.PI * Math.Sqrt(Math.Pow(transfer.TransferSma, 3) / selected.Mu) : 0.0;
             double carrierBurn = BurnTiming.Duration(plan.ParkingDeltaV, releases.CarrierMassAfterFirst,
                                                      releases.CarrierThrust, releases.CarrierIsp) ?? 0.0;
             var satBurns = releases.Satellites.Skip(1)
@@ -116,7 +151,7 @@ namespace RelayOrbiter.Plugin
             string satDir = ReleasePoint.Direction(plan.SatelliteCircularizeDeltaV);
 
             GUILayout.Label($"Plan: {n} satellites, {Resonance.SpacingDeg(n):F0}° apart", _header);
-            Row("Parking orbit", ParkingDescription(selected, orbit.ApA, n, parking));
+            Row("Parking orbit", ParkingDescription(selected, target.Value, n, parking));
             Row($"SAT-1 {releases.Satellites[0].Candidate.Name}",
                 "released before the carrier's burn; stays on this circular orbit, no burn of its own");
             Row("Carrier parking burn",
@@ -124,7 +159,7 @@ namespace RelayOrbiter.Plugin
             for (int k = 1; k < n; ++k)
                 Row($"SAT-{k + 1} {releases.Satellites[k].Candidate.Name}",
                     $"{Ms(Math.Abs(plan.SatelliteCircularizeDeltaV))} {satDir}, {satBurns[k - 1]:F0} s");
-            Row("Total time", "about " + _formatTime((n - 1) * plan.ParkingPeriod + (ut - now)));
+            Row("Total time", "about " + _formatTime((n - 1) * plan.ParkingPeriod + transferTime + plan.CircularPeriod));
 
             // Fuel: each satellite's tanks, and what the carrier (outside the satellites) can give.
             var satIds = order.SelectMany(c => c.PartIds).ToList();
@@ -142,7 +177,24 @@ namespace RelayOrbiter.Plugin
             if (_topUp && ResourceTopUp.Shortfall(satTanks, transfers) > 1e-3)
                 Warn("The carrier doesn't have enough fuel to fill every satellite; they get what is left.");
 
+            // Δv of the carrier alone: its running engines and its own propellant, minus what
+            // goes to the satellites, while carrying every satellite (the worst case). KSP's
+            // own readout also counts the satellites' stages.
+            double carrierDv = transfer.TotalDv + planeDv + Math.Abs(plan.ParkingDeltaV);
+            double available = VesselParts.CarrierDeltaV(vessel, new HashSet<uint>(satIds),
+                _topUp ? transfers : (IReadOnlyList<ResourceTransfer>)Array.Empty<ResourceTransfer>(), releases.CarrierIsp);
+            Row("Carrier Δv needed", $"{Ms(carrierDv)}  (carrier has about {Ms(available)})",
+                available >= carrierDv ? _ok : _warn);
+
             var problems = new List<string>();
+            if (available < carrierDv)
+                problems.Add($"Not enough Δv: the carrier needs about {Ms(carrierDv)} and has about {Ms(available)}.");
+            if (_settings.ChangeInclination && !_inclinationValid)
+                problems.Add("Fix the target inclination (0 to 180°).");
+            // CanSetMode(Maneuver) is false while there is no node yet; ask for the SAS skill instead.
+            if (planeChange && vessel.VesselValues.AutopilotSkill.value < ManeuverSasSkill &&
+                !vessel.Autopilot.CanSetMode(VesselAutopilot.AutopilotMode.Maneuver))
+                problems.Add("The plane change needs SAS maneuver mode (probe core or pilot with SAS level 3).");
             if (parking == ParkingOrbit.Inner)
             {
                 double hPeri = plan.PeriapsisRadius - selected.Radius;
@@ -165,6 +217,16 @@ namespace RelayOrbiter.Plugin
 
             _extendPanels = GUILayout.Toggle(_extendPanels, " Extend the satellites' solar panels before release");
 
+            // Names: callsign unique around this body, orbit tag, inclination.
+            string callsign = ConstellationNaming.Callsign(selected.Name, FlightGlobals.Vessels.Select(v => v.vesselName));
+            string tag = ConstellationNaming.OrbitTag(target.Value, _altitudes.Synchronous(selected).Altitude);
+            double finalInc = _settings.ChangeInclination ? _settings.InclinationDeg : orbit.inclination;
+            var names = Enumerable.Range(1, n)
+                .Select(k => ConstellationNaming.SatelliteName(selected.Name, callsign, k, n, tag, finalInc))
+                .ToArray();
+            _settings.NameSatellites = GUILayout.Toggle(_settings.NameSatellites,
+                $" Name them {names[0]} … {n}/{n} and mark them as relays");
+
             bool wasEnabled = GUI.enabled;
             GUI.enabled = wasEnabled && problems.Count == 0;
             if (GUILayout.Button("Start deployment") && !_startRequested)
@@ -177,19 +239,41 @@ namespace RelayOrbiter.Plugin
                         transfers.GroupBy(t => t.Resource).Select(g => $"{g.Key} +{g.Sum(t => t.Amount):F1}")));
                     _startRequested = true;
                 }
-                else StartRun(vessel, order, carrierBurn, satBurns, parking);
+                else StartRun(vessel, order, carrierBurn, satBurns, parking, rGoal,
+                              new TransferSteps(transfer.Needed, planeChange, planeFirst), names);
             }
             else if (_startRequested && Event.current.type == EventType.Repaint)
             {
                 // Repaint is the last pass of the frame: the next Layout pass sees the runner.
                 _startRequested = false;
-                if (problems.Count == 0) StartRun(vessel, order, carrierBurn, satBurns, parking);
+                if (problems.Count == 0)
+                    StartRun(vessel, order, carrierBurn, satBurns, parking, rGoal,
+                             new TransferSteps(transfer.Needed, planeChange, planeFirst), names);
             }
             GUI.enabled = wasEnabled;
             GUILayout.Label("While it runs: don't touch the controls and don't switch vessels or leave the " +
                             $"flight scene; the mod switches to SAT-2 … SAT-{n} itself. Time warp is handled for you.",
                             _warn);
         }
+
+        private void DrawInclination(double current)
+        {
+            if (_inclinationText.Length == 0)
+                _inclinationText = _settings.InclinationDeg.ToString("F1", CultureInfo.InvariantCulture);
+            GUILayout.BeginHorizontal();
+            _settings.ChangeInclination = GUILayout.Toggle(_settings.ChangeInclination, " Change inclination to",
+                                                           GUILayout.Width(160f));
+            _inclinationText = GUILayout.TextField(_inclinationText, GUILayout.Width(55f));
+            GUILayout.Label($"°   (now {current:F2}°)");
+            GUILayout.EndHorizontal();
+            _inclinationValid = double.TryParse(_inclinationText, NumberStyles.Float, CultureInfo.InvariantCulture,
+                                                out double deg) && deg >= 0.0 && deg <= 180.0;
+            if (_inclinationValid) _settings.InclinationDeg = deg;
+            else if (_settings.ChangeInclination) Warn("Inclination must be between 0 and 180°.");
+        }
+
+        private static string Km(double metres) =>
+            (metres / 1000.0).ToString("N2", CultureInfo.InvariantCulture) + " km";
 
         private string ParkingDescription(Body body, double altitude, int n, ParkingOrbit parking)
         {
@@ -201,7 +285,7 @@ namespace RelayOrbiter.Plugin
         }
 
         private void StartRun(Vessel vessel, List<SatelliteCandidate> order, double carrierBurn, double[] satBurns,
-                              ParkingOrbit parking)
+                              ParkingOrbit parking, double goalRadius, TransferSteps prelude, string[] names)
         {
             var parts = order.Select(c => VesselParts.CommandPart(vessel, c)).ToArray();
             if (parts.Any(p => p == null))
@@ -210,10 +294,12 @@ namespace RelayOrbiter.Plugin
                 return;
             }
             _runner = new DeploymentRunner(
-                DeploymentSequence.Build(carrierBurn, satBurns), vessel,
+                DeploymentSequence.Build(carrierBurn, satBurns, prelude), vessel,
                 order.Select(c => c.SeparatorId).ToArray(), parts!,
                 order.Select(c => c.Name).ToArray(),
                 order.Select(c => c.PartIds.ToArray()).ToArray(), _extendPanels, _topUp, parking,
+                _transfer, goalRadius, _settings.ChangeInclination ? _settings.InclinationDeg : (double?)null,
+                _settings.NameSatellites ? names : null,
                 _planner, _formatTime);
         }
 
@@ -242,11 +328,11 @@ namespace RelayOrbiter.Plugin
 
         private void Warn(string text) => GUILayout.Label(text, _warn);
 
-        private void Row(string label, string value)
+        private void Row(string label, string value, GUIStyle? style = null)
         {
             GUILayout.BeginHorizontal();
             GUILayout.Label(label, GUILayout.Width(LabelW));
-            GUILayout.Label(value, _ok);
+            GUILayout.Label(value, style ?? _ok);
             GUILayout.EndHorizontal();
         }
 

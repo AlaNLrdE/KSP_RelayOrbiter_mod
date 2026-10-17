@@ -102,7 +102,7 @@ namespace RelayOrbiter.Plugin
             var window = new RelayOrbiterWindow(
                 db, altitudes, calculator, formatTime, _settings,
                 new ManeuversPanel(deployment, altitudes, calculator, _settings, formatTime),
-                new AutomationPanel(deployment, altitudes, calculator, _settings, formatTime),
+                new AutomationPanel(deployment, altitudes, calculator, _settings, new TransferPlanner(mechanics), formatTime),
                 CloseWindow);
             LoadSettings(window);
             return window;
@@ -125,6 +125,9 @@ namespace RelayOrbiter.Plugin
             window.Position = new Vector2(_config.GetValue("windowX", 240f), _config.GetValue("windowY", 120f));
             window.Tab = _config.GetValue("tab", 0);
             _settings.Satellites = _config.GetValue("satellites", 3);
+            _settings.ChangeInclination = _config.GetValue("changeInclination", false);
+            _settings.InclinationDeg = _config.GetValue("inclination", 0.0);
+            _settings.NameSatellites = _config.GetValue("nameSatellites", true);
         }
 
         private void SaveSettings()
@@ -134,6 +137,9 @@ namespace RelayOrbiter.Plugin
             _config.SetValue("windowY", _window.Position.y);
             _config.SetValue("tab", _window.Tab);
             _config.SetValue("satellites", _settings.Satellites);
+            _config.SetValue("changeInclination", _settings.ChangeInclination);
+            _config.SetValue("inclination", _settings.InclinationDeg);
+            _config.SetValue("nameSatellites", _settings.NameSatellites);
             _config.save();
         }
 

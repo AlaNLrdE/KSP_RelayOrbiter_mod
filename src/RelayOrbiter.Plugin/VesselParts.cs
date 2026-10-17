@@ -112,6 +112,25 @@ namespace RelayOrbiter.Plugin
             }
         }
 
+        // Δv of the carrier on its own: Isp of its running engines, the propellant in its own
+        // tanks (outside satelliteIds) minus what is moved to the satellites, and the
+        // vessel's whole mass, satellites included (the worst case).
+        public static double CarrierDeltaV(Vessel vessel, ISet<uint> satelliteIds,
+                                           IEnumerable<ResourceTransfer> toSatellites, double isp)
+        {
+            var propellants = new HashSet<string>(vessel.FindPartModulesImplementing<ModuleEngines>()
+                .Where(e => e.isEnabled && e.EngineIgnited && !satelliteIds.Contains(e.part.flightID))
+                .SelectMany(e => e.propellants.Select(p => p.name)));
+            double fuel = 0.0;
+            foreach (var p in vessel.parts.Where(p => !satelliteIds.Contains(p.flightID)))
+                foreach (var r in p.Resources)
+                    if (propellants.Contains(r.resourceName)) fuel += r.amount * r.info.density;
+            foreach (var t in toSatellites.Where(t => propellants.Contains(t.Resource)))
+                fuel -= t.Amount * PartResourceLibrary.Instance.GetDefinition(t.Resource).density;
+            double wet = vessel.GetTotalMass();
+            return BurnTiming.DeltaV(isp, wet, wet - System.Math.Max(0.0, fuel));
+        }
+
         private static bool IsFuel(PartResource r) =>
             r.resourceName != "ElectricCharge" && r.info.resourceTransferMode != ResourceTransferMode.NONE;
 

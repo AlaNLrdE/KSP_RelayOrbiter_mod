@@ -23,10 +23,15 @@ namespace RelayOrbiter.Plugin
         private double _misalignedSince = double.NaN, _noThrustSince = double.NaN;
         private float _throttle;
 
-        public NodeExecutor(Vessel vessel, Func<double, string> formatTime)
+        private readonly bool _maneuverModeRequired;
+
+        // maneuverModeRequired: the burn is not purely prograde/retrograde (plane change),
+        // so the prograde/retrograde SAS fallback would point the wrong way.
+        public NodeExecutor(Vessel vessel, Func<double, string> formatTime, bool maneuverModeRequired = false)
         {
             _vessel = vessel;
             _formatTime = formatTime;
+            _maneuverModeRequired = maneuverModeRequired;
         }
 
         public string Status { get; private set; } = "";
@@ -52,7 +57,9 @@ namespace RelayOrbiter.Plugin
             double mass = _vessel.GetTotalMass();
 
             if (!_tail && !PointAt(node))
-                return Fail("The vessel can't point along the burn: it needs SAS (a probe core or pilot).");
+                return Fail(_maneuverModeRequired
+                    ? "This burn needs SAS maneuver mode (probe core or pilot with SAS level 3)."
+                    : "The vessel can't point along the burn: it needs SAS (a probe core or pilot).");
 
             if (!_burning)
             {
@@ -158,6 +165,8 @@ namespace RelayOrbiter.Plugin
                 var ap = _vessel.Autopilot;
                 if (ap.CanSetMode(VesselAutopilot.AutopilotMode.Maneuver))
                     _mode = VesselAutopilot.AutopilotMode.Maneuver;
+                else if (_maneuverModeRequired)
+                    return false;
                 else if (node.DeltaV.z >= 0.0 && ap.CanSetMode(VesselAutopilot.AutopilotMode.Prograde))
                     _mode = VesselAutopilot.AutopilotMode.Prograde;
                 else if (node.DeltaV.z < 0.0 && ap.CanSetMode(VesselAutopilot.AutopilotMode.Retrograde))
