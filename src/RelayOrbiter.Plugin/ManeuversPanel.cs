@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using RelayOrbiter.Core;
@@ -22,6 +23,7 @@ namespace RelayOrbiter.Plugin
         private bool _addAlarms = true;
         private DeploymentPlan? _lastPlan;
         private uint _lastPlanVessel;
+        private readonly List<uint> _planAlarms = new List<uint>();  // alarms created for _lastPlan
         private string _message = "";
 
         private GUIStyle? _ok, _warn, _header;
@@ -95,6 +97,16 @@ namespace RelayOrbiter.Plugin
                 return;
             }
 
+            // The schedule belongs to the parking-orbit node: drop it (and its alarms)
+            // if that node was deleted or moved before the burn.
+            if (_lastPlan != null && _lastPlanVessel == vessel.persistentId && now < _lastPlan.BurnUT &&
+                !solver.maneuverNodes.Any(n => Math.Abs(n.UT - _lastPlan.BurnUT) < 1.0))
+            {
+                int removed = ClearPlan();
+                _message = "The parking-orbit node was removed or moved; its release schedule" +
+                           (removed > 0 ? $" and {removed} alarm(s) were" : " was") + " cleared.";
+            }
+
             int existing = solver.maneuverNodes.Count;
             if (existing > 0)
             {
@@ -102,7 +114,9 @@ namespace RelayOrbiter.Plugin
                 if (GUILayout.Button($"Delete {existing} existing node(s)"))
                 {
                     foreach (var node in solver.maneuverNodes.ToList()) node.RemoveSelf();
-                    _message = "Existing nodes deleted.";
+                    int removed = ClearPlan();
+                    _message = "Existing nodes deleted" +
+                               (removed > 0 ? $", with {removed} release alarm(s)." : ".");
                 }
             }
 
@@ -112,6 +126,7 @@ namespace RelayOrbiter.Plugin
             GUI.enabled = wasEnabled && existing == 0 && periOk;
             if (GUILayout.Button("Create parking-orbit node"))
             {
+                ClearPlan();  // a new plan replaces the previous one and its alarms
                 CreateNode(solver, plan.BurnUT, plan.ParkingDeltaV);
                 _lastPlan = plan;
                 _lastPlanVessel = vessel.persistentId;
@@ -175,9 +190,25 @@ namespace RelayOrbiter.Plugin
                 if (alarm.actions == null) alarm.actions = new AlarmActions();
                 alarm.actions.warp    = AlarmActions.WarpEnum.KillWarp;
                 alarm.actions.message = AlarmActions.MessageEnum.Yes;
-                if (AlarmClockScenario.AddAlarm(alarm)) ++added;
+                if (AlarmClockScenario.AddAlarm(alarm))
+                {
+                    _planAlarms.Add(alarm.Id);
+                    ++added;
+                }
             }
             return added;
+        }
+
+        // Forget the current plan and delete the alarms created for it.
+        // Returns how many alarms were deleted.
+        private int ClearPlan()
+        {
+            int removed = 0;
+            foreach (uint id in _planAlarms)
+                if (AlarmClockScenario.DeleteAlarm(id)) ++removed;
+            _planAlarms.Clear();
+            _lastPlan = null;
+            return removed;
         }
 
         // ── Helpers ──────────────────────────────────────────────────────────
