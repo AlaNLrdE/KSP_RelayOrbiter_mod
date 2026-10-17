@@ -1,9 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Pure orbital math, no Unity/KSP references: loadable by KSP's Mono runtime
-       and testable from modern .NET. -->
+  <!-- Pure orbital math, no Unity/KSP references.
+       net472: loaded by KSP (its Mono runtime ships no netstandard.dll facade).
+       netstandard2.0: referenced by the net8.0 test project. -->
   <PropertyGroup>
-    <TargetFramework>netstandard2.0</TargetFramework>
+    <TargetFrameworks>net472;netstandard2.0</TargetFrameworks>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <RootNamespace>RelayOrbiter.Core</RootNamespace>
