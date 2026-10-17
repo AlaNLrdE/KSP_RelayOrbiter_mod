@@ -25,6 +25,8 @@ namespace RelayOrbiter.Plugin
         private readonly List<uint> _order = new List<uint>();  // separator flight ids
         private uint _orderVessel;
         private bool _extendPanels = true;
+        private bool _topUp = true;
+        private bool _startRequested;  // start on the next frame, after the top-up
         private DeploymentRunner? _runner;
         private GUIStyle? _ok, _warn, _header;
 
@@ -113,6 +115,22 @@ namespace RelayOrbiter.Plugin
                     $"{Ms(plan.SatelliteCircularizeDeltaV)} prograde, {satBurns[k - 1]:F0} s");
             Row("Total time", "about " + _formatTime(2.0 * plan.ParkingPeriod + orbit.timeToAp));
 
+            // Fuel: each satellite's tanks, and what the carrier (outside the satellites) can give.
+            var satIds = order.SelectMany(c => c.PartIds).ToList();
+            var satTanks = VesselParts.Tanks(vessel, satIds);
+            var carrierTanks = VesselParts.Tanks(vessel,
+                vessel.parts.Select(p => p.flightID).Where(id => !satIds.Contains(id)));
+            var transfers = ResourceTopUp.Plan(satTanks, carrierTanks);
+            for (int k = 0; k < 3; ++k)
+            {
+                double fill = ResourceTopUp.FillFraction(VesselParts.Tanks(vessel, order[k].PartIds));
+                Row($"SAT-{k + 1} fuel", fill >= 0.999 ? "full"
+                    : $"{fill:P0}" + (_topUp ? ", topped up from the carrier at start" : ""));
+            }
+            _topUp = GUILayout.Toggle(_topUp, " Top up the satellites' tanks from the carrier at start");
+            if (_topUp && ResourceTopUp.Shortfall(satTanks, transfers) > 1e-3)
+                Warn("The carrier doesn't have enough fuel to fill every satellite; they get what is left.");
+
             var problems = new List<string>();
             if (hPeri <= 0.0 || hPeri < selected.Atm)
                 problems.Add("The parking orbit's periapsis would be too low. Raise the apoapsis.");
@@ -131,22 +149,44 @@ namespace RelayOrbiter.Plugin
 
             bool wasEnabled = GUI.enabled;
             GUI.enabled = wasEnabled && problems.Count == 0;
-            if (GUILayout.Button("Start deployment"))
+            if (GUILayout.Button("Start deployment") && !_startRequested)
             {
-                var parts = order.Select(c => VesselParts.CommandPart(vessel, c)).ToArray();
-                if (parts.Any(p => p == null)) Warn("Could not find a satellite's command part.");
-                else
-                    _runner = new DeploymentRunner(
-                        DeploymentSequence.Build(carrierBurn, satBurns), vessel,
-                        order.Select(c => c.SeparatorId).ToArray(), parts!,
-                        order.Select(c => c.Name).ToArray(),
-                        order.Select(c => c.PartIds.ToArray()).ToArray(), _extendPanels,
-                        _planner, _formatTime);
+                if (_topUp && transfers.Count > 0)
+                {
+                    // Fill the tanks, then start next frame so the burn estimates use the new masses.
+                    VesselParts.Apply(vessel, transfers);
+                    Debug.Log("[RelayOrbiter] Topped up the satellites: " + string.Join(", ",
+                        transfers.GroupBy(t => t.Resource).Select(g => $"{g.Key} +{g.Sum(t => t.Amount):F1}")));
+                    _startRequested = true;
+                }
+                else StartRun(vessel, order, carrierBurn, satBurns);
+            }
+            else if (_startRequested && Event.current.type == EventType.Repaint)
+            {
+                // Repaint is the last pass of the frame: the next Layout pass sees the runner.
+                _startRequested = false;
+                if (problems.Count == 0) StartRun(vessel, order, carrierBurn, satBurns);
             }
             GUI.enabled = wasEnabled;
             GUILayout.Label("While it runs: don't touch the controls and don't switch vessels or leave the " +
                             "flight scene; the mod switches to SAT-2 and SAT-3 itself. Time warp is handled for you.",
                             _warn);
+        }
+
+        private void StartRun(Vessel vessel, List<SatelliteCandidate> order, double carrierBurn, double[] satBurns)
+        {
+            var parts = order.Select(c => VesselParts.CommandPart(vessel, c)).ToArray();
+            if (parts.Any(p => p == null))
+            {
+                Debug.Log("[RelayOrbiter] Could not find a satellite's command part.");
+                return;
+            }
+            _runner = new DeploymentRunner(
+                DeploymentSequence.Build(carrierBurn, satBurns), vessel,
+                order.Select(c => c.SeparatorId).ToArray(), parts!,
+                order.Select(c => c.Name).ToArray(),
+                order.Select(c => c.PartIds.ToArray()).ToArray(), _extendPanels,
+                _planner, _formatTime);
         }
 
         private void DrawRunner()

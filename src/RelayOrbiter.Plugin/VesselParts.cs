@@ -87,6 +87,34 @@ namespace RelayOrbiter.Plugin
             return n;
         }
 
+        // Fuel containers among the given parts: transferable resources other than
+        // electric charge (that excludes solid fuel, ablator and the like).
+        public static List<TankInfo> Tanks(Vessel vessel, IEnumerable<uint> partIds)
+        {
+            var tanks = new List<TankInfo>();
+            foreach (var p in partIds.Select(id => Find(vessel, id)).Where(p => p != null))
+                foreach (var r in p!.Resources)
+                    if (IsFuel(r)) tanks.Add(new TankInfo(p.flightID, r.resourceName, r.amount, r.maxAmount));
+            return tanks;
+        }
+
+        // Moves resources between parts of the vessel. Totals are conserved.
+        public static void Apply(Vessel vessel, IEnumerable<ResourceTransfer> transfers)
+        {
+            foreach (var t in transfers)
+            {
+                var from = Find(vessel, t.From)?.Resources[t.Resource];
+                var to   = Find(vessel, t.To)?.Resources[t.Resource];
+                if (from == null || to == null) continue;
+                double amount = System.Math.Min(t.Amount, System.Math.Min(from.amount, to.maxAmount - to.amount));
+                from.amount -= amount;
+                to.amount   += amount;
+            }
+        }
+
+        private static bool IsFuel(PartResource r) =>
+            r.resourceName != "ElectricCharge" && r.info.resourceTransferMode != ResourceTransferMode.NONE;
+
         public static void ActivateEngines(Vessel vessel)
         {
             foreach (var e in vessel.FindPartModulesImplementing<ModuleEngines>())
