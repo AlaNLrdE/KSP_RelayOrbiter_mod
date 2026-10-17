@@ -15,5 +15,9 @@ namespace RelayOrbiter.Core
             // t·(m/s)/kN = s
             return massTonnes * ve / thrustKN * (1.0 - Math.Exp(-Math.Abs(dv) / ve));
         }
+
+        // Rocket equation: Δv = Isp g0 ln(m_wet / m_dry). Zero for invalid inputs.
+        public static double DeltaV(double isp, double wetMass, double dryMass) =>
+            isp > 0.0 && dryMass > 0.0 && wetMass > dryMass ? isp * G0 * Math.Log(wetMass / dryMass) : 0.0;
     }
 }

@@ -15,6 +15,24 @@ namespace RelayOrbiter.Core
         CreateParkingNode,      // carrier: parking-orbit burn at the next apoapsis
         CreateCircularizeNode,  // active vessel: circularize at the next apoapsis
         ExecuteNode,            // fly the active vessel's next node
+        CreateTransferNode,           // carrier: first Hohmann burn towards the target orbit
+        CreateTargetCircularizeNode,  // carrier: circularize at the target orbit
+        CreatePlaneChangeNode,        // carrier: rotate the orbit plane at the next node
+    }
+
+    // What to do before the deployment to reach the target orbit.
+    public sealed class TransferSteps
+    {
+        public TransferSteps(bool transfer, bool planeChange, bool planeChangeFirst)
+        {
+            Transfer         = transfer;
+            PlaneChange      = planeChange;
+            PlaneChangeFirst = planeChangeFirst;
+        }
+
+        public bool Transfer         { get; }
+        public bool PlaneChange      { get; }
+        public bool PlaneChangeFirst { get; }  // lowering: change the plane while still high (slower)
     }
 
     public sealed class SequenceStep
@@ -50,12 +68,27 @@ namespace RelayOrbiter.Core
 
         // carrierBurn: parking burn duration; satelliteBurns: circularization durations (s) of
         // SAT-2..SAT-N, so there are satelliteBurns.Count + 1 satellites.
-        public static IReadOnlyList<SequenceStep> Build(double carrierBurn, IReadOnlyList<double> satelliteBurns)
+        public static IReadOnlyList<SequenceStep> Build(double carrierBurn, IReadOnlyList<double> satelliteBurns,
+                                                        TransferSteps? prelude = null)
         {
             if (satelliteBurns.Count < 1)
                 throw new ArgumentException("Need the circularization burns of SAT-2 onwards.", nameof(satelliteBurns));
 
-            var steps = new List<SequenceStep>
+            var steps = new List<SequenceStep>();
+            if (prelude != null)
+            {
+                void Burn(StepKind create) =>
+                    steps.AddRange(new[] { new SequenceStep(create), new SequenceStep(StepKind.ExecuteNode) });
+                if (prelude.PlaneChange && prelude.PlaneChangeFirst) Burn(StepKind.CreatePlaneChangeNode);
+                if (prelude.Transfer)
+                {
+                    Burn(StepKind.CreateTransferNode);
+                    Burn(StepKind.CreateTargetCircularizeNode);
+                }
+                if (prelude.PlaneChange && !prelude.PlaneChangeFirst) Burn(StepKind.CreatePlaneChangeNode);
+            }
+
+            steps.AddRange(new[]
             {
                 new SequenceStep(StepKind.WarpToRelease,
                                  seconds: carrierBurn / 2 + AlignLead + SeparationWait + ReleaseMargin + OrientTime),
@@ -64,7 +97,7 @@ namespace RelayOrbiter.Core
                 new SequenceStep(StepKind.Wait, seconds: SeparationWait),
                 new SequenceStep(StepKind.CreateParkingNode),
                 new SequenceStep(StepKind.ExecuteNode),
-            };
+            });
 
             for (int k = 1; k <= satelliteBurns.Count; ++k)
             {

@@ -29,4 +29,21 @@ public class BurnTimingTests
     [InlineData(2.0, 0.0)]
     public void NoThrustOrIspGivesNull(double thrust, double isp) =>
         Assert.Null(BurnTiming.Duration(100.0, 2.0, thrust, isp));
+
+    // ── Rocket equation Δv ───────────────────────────────────────────────────
+
+    [Fact]
+    public void DeltaVFromTheRocketEquation() =>
+        Precision.Close(345.0 * BurnTiming.G0 * Math.Log(10.0 / 6.0), BurnTiming.DeltaV(345.0, 10.0, 6.0), "Δv");
+
+    [Fact]
+    public void NoFuelNoDeltaV() =>
+        Assert.Equal(0.0, BurnTiming.DeltaV(345.0, 10.0, 10.0));
+
+    [Theory]
+    [InlineData(0.0, 10.0, 6.0)]
+    [InlineData(345.0, 0.0, 0.0)]
+    [InlineData(345.0, 6.0, 10.0)]  // dry mass above wet mass
+    public void InvalidInputsGiveZero(double isp, double wet, double dry) =>
+        Assert.Equal(0.0, BurnTiming.DeltaV(isp, wet, dry));
 }
