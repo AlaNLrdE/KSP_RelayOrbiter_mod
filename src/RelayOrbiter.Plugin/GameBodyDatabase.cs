@@ -28,9 +28,15 @@ namespace RelayOrbiter.Plugin
                    .OrderBy(b => b.OrbitalRadius ?? 0.0)
                    .ToArray();
 
-        // Name shown to the player ("Kerbol"), not the internal bodyName ("Sun").
-        // Used as the body's identifier everywhere in the plugin.
-        public static string NameOf(KspBody b) => b.displayName.LocalizeRemoveGender();
+        // Name shown to the player, not the internal bodyName. Used as the body's
+        // identifier everywhere in the plugin. Stock KSP calls its star "The Sun"
+        // (internal "Sun"); like the CLI and the wiki, show it as Kerbol. Other
+        // stars (Kopernicus systems, other languages) keep the game's name.
+        public static string NameOf(KspBody b)
+        {
+            string name = b.displayName.LocalizeRemoveGender();
+            return b.bodyName == "Sun" && name == "The Sun" ? "Kerbol" : name;
+        }
 
         private static Body Convert(KspBody b)
         {
