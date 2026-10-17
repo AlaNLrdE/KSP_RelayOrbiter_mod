@@ -1,0 +1,8 @@
+<Project>
+  <!-- Copy to KspPaths.props (gitignored) and set the KSP installs on this machine.
+       Paths are as seen by the build: WSL paths when building from WSL. -->
+  <PropertyGroup>
+    <!-- Test install: compile references come from here, and Deploy copies the mod here. -->
+    <KSPDir>/mnt/d/GOG GalaxyGames/KSP/Kerbal Space Program</KSPDir>
+  </PropertyGroup>
+</Project>

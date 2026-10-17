@@ -10,3 +10,9 @@ TestResults/
 
 # ── Claude ────────────────────────────────────────────────────────────────────
 .claude/
+
+# ── KSP ───────────────────────────────────────────────────────────────────────
+# Machine-specific install paths (template: KspPaths.props.example)
+KspPaths.props
+# Build output staged into the mod folder
+GameData/RelayOrbiter/Plugins/

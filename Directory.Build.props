@@ -1,0 +1,5 @@
+<Project>
+  <!-- Machine-specific KSP install paths (see KspPaths.props.example). -->
+  <Import Project="$(MSBuildThisFileDirectory)KspPaths.props"
+          Condition="Exists('$(MSBuildThisFileDirectory)KspPaths.props')" />
+</Project>

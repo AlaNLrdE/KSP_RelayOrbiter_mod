@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- KSP plugin: references the game's assemblies from $(KSPDir). -->
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <RootNamespace>RelayOrbiter.Plugin</RootNamespace>
+    <AssemblyName>RelayOrbiter</AssemblyName>
+    <KSPManaged>$(KSPDir)/KSP_x64_Data/Managed</KSPManaged>
+    <ModDir>$(MSBuildThisFileDirectory)../../GameData/RelayOrbiter</ModDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../RelayOrbiter.Core/RelayOrbiter.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Game assemblies: compile against them, never copy them.
+       Unity splits its API into many UnityEngine.*Module.dll files; reference them all. -->
+  <ItemGroup>
+    <Reference Include="$(KSPManaged)/Assembly-CSharp.dll" Private="false" />
+    <Reference Include="$(KSPManaged)/Assembly-CSharp-firstpass.dll" Private="false" />
+    <Reference Include="$(KSPManaged)/UnityEngine*.dll" Private="false" />
+  </ItemGroup>
+
+  <Target Name="CheckKspDir" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="'$(KSPDir)' == ''"
+           Text="KSPDir is not set. Copy KspPaths.props.example to KspPaths.props and edit it." />
+    <Error Condition="!Exists('$(KSPManaged)/Assembly-CSharp.dll')"
+           Text="Assembly-CSharp.dll not found under '$(KSPManaged)'. Check KSPDir in KspPaths.props." />
+  </Target>
+
+  <!-- Stage the plugin and core DLLs into GameData/RelayOrbiter/Plugins. -->
+  <Target Name="StageMod" AfterTargets="Build">
+    <ItemGroup>
+      <ModDll Include="$(TargetDir)RelayOrbiter.dll;$(TargetDir)RelayOrbiter.Core.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ModDll)" DestinationFolder="$(ModDir)/Plugins" SkipUnchangedFiles="true" />
+  </Target>
+
+  <!-- dotnet build -p:DeployToKsp=true  mirrors GameData/RelayOrbiter into $(KSPDir)/GameData. -->
+  <Target Name="DeployToKsp" AfterTargets="StageMod" Condition="'$(DeployToKsp)' == 'true'">
+    <ItemGroup>
+      <ModFile Include="$(ModDir)/**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ModFile)"
+          DestinationFiles="@(ModFile->'$(KSPDir)/GameData/RelayOrbiter/%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+    <Message Importance="high" Text="Deployed RelayOrbiter to $(KSPDir)/GameData/RelayOrbiter" />
+  </Target>
+
+</Project>
