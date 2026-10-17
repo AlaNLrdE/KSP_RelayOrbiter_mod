@@ -21,6 +21,7 @@ namespace RelayOrbiter.Plugin
         private readonly IConstellationCalculator _calculator;
         private readonly Func<double, string>     _formatTime;
         private readonly ManeuversPanel?          _maneuvers;  // null outside flight
+        private readonly AutomationPanel?         _automation; // null outside flight
         private readonly List<(Body body, int depth)> _bodyTree;
 
         private Rect    _rect = new Rect(240f, 120f, Width, 200f);
@@ -29,25 +30,30 @@ namespace RelayOrbiter.Plugin
         private AltitudeSource _source = AltitudeSource.Synchronous;
         private int     _child, _midA, _midB = 1;
         private string  _customKm = "1000";
-        private int     _tab;  // 0 = results, 1 = maneuvers
+        private int     _tab;  // 0 = results, 1 = maneuvers, 2 = automation
 
         private GUIStyle? _ok, _warn, _header;
 
         public RelayOrbiterWindow(IBodyDatabase db, IAltitudePlanner planner,
                                   IConstellationCalculator calculator,
                                   Func<double, string> formatTime, string? initialBody,
-                                  ManeuversPanel? maneuvers)
+                                  ManeuversPanel? maneuvers, AutomationPanel? automation)
         {
             _db         = db;
             _planner    = planner;
             _calculator = calculator;
             _formatTime = formatTime;
             _maneuvers  = maneuvers;
+            _automation = automation;
             _bodyTree   = BuildTree();
             _body       = (initialBody != null ? _db.Find(initialBody) : null) ?? _bodyTree[0].body;
         }
 
         public bool Visible { get; set; }
+
+        // Runs the automation every frame, even while the window is hidden.
+        public void Tick()  => _automation?.Tick();
+        public void Abort() => _automation?.Abort();
         public Rect Rect => _rect;
 
         public void Draw()
@@ -67,12 +73,17 @@ namespace RelayOrbiter.Plugin
             var option = DrawAltitudeSelector();
             GUILayout.Space(6f);
 
-            if (_maneuvers != null)
-                _tab = GUILayout.Toolbar(_tab, new[] { "Results", "Maneuvers" });
+            Action<string> selectBody = name => { var b = _db.Find(name); if (b != null) SelectBody(b); };
+            if (_maneuvers != null && _automation != null)
+            {
+                if (_automation.IsRunning) _tab = 2;
+                _tab = GUILayout.Toolbar(_tab, new[] { "Results", "Maneuvers", "Automation" });
+            }
 
             if (_maneuvers != null && _tab == 1)
-                _maneuvers.Draw(_body, option != null && option.IsValid ? option.Altitude : (double?)null,
-                                name => { var b = _db.Find(name); if (b != null) SelectBody(b); });
+                _maneuvers.Draw(_body, option != null && option.IsValid ? option.Altitude : (double?)null, selectBody);
+            else if (_automation != null && _tab == 2)
+                _automation.Draw(_body, selectBody);
             else if (option == null) { }
             else if (!option.IsValid) GUILayout.Label(StatusText(option), _warn);
             else                      DrawResult(_calculator.Calculate(_body, option.Altitude));

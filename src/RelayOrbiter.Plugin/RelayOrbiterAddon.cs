@@ -35,8 +35,11 @@ namespace RelayOrbiter.Plugin
             if (ApplicationLauncher.Ready) AddButton();
         }
 
+        private void Update() => _window?.Tick();
+
         private void OnDestroy()
         {
+            _window?.Abort();  // leaving the scene stops a running deployment
             GameEvents.onGUIApplicationLauncherReady.Remove(AddButton);
             GameEvents.onGUIApplicationLauncherDestroyed.Remove(RemoveButton);
             RemoveButton();
@@ -79,11 +82,12 @@ namespace RelayOrbiter.Plugin
                 : FlightGlobals.GetHomeBody());
             var altitudes = new AltitudePlanner(db, mechanics);
             Func<double, string> formatTime = t => KSPUtil.PrintTime(t, 5, false);  // honours the game's calendar
-            var maneuvers = HighLogic.LoadedSceneIsFlight
-                ? new ManeuversPanel(new DeploymentPlanner(mechanics), altitudes, formatTime)
-                : null;
+            var deployment = new DeploymentPlanner(mechanics);
+            bool flight = HighLogic.LoadedSceneIsFlight;
             return new RelayOrbiterWindow(
-                db, altitudes, new ConstellationCalculator(mechanics), formatTime, initial, maneuvers);
+                db, altitudes, new ConstellationCalculator(mechanics), formatTime, initial,
+                flight ? new ManeuversPanel(deployment, altitudes, formatTime) : null,
+                flight ? new AutomationPanel(deployment, altitudes, formatTime) : null);
         }
 
         private void OnGUI()
