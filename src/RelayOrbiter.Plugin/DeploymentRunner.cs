@@ -14,7 +14,7 @@ namespace RelayOrbiter.Plugin
         private const double SwitchTimeout = 30.0;  // s for a vessel switch to complete
         private const float  MaxSpinRate   = 0.02f; // rad/s: stopped rotating
         private const double AlignedHold   = 1.0;   // s aligned and still before releasing
-        private const double MinClearance  = 15.0;  // m between carrier and satellite before switching
+        private const double MinClearance  = 10.0;  // m between carrier and satellite before switching
         private const double MinTurnDeg    = 60.0;  // carrier turn that moves its end off the satellite's path
         private const double ClearDelay    = 2.0;   // s after release before the carrier starts turning
         // KSP unloads orbiting vessels 2.5 km from the active one; switching back to an
@@ -29,6 +29,7 @@ namespace RelayOrbiter.Plugin
         private readonly string[] _names;
         private readonly uint[][] _satellitePartIds;  // every part each release detaches
         private readonly bool _extendPanels, _topUp;
+        private readonly ParkingOrbit _parking;  // inner: release at apoapsis; outer: at periapsis
         private Vector3 _clearFrom;
         private VesselAutopilot.AutopilotMode? _clearMode;
         private double _clearStart;
@@ -52,7 +53,7 @@ namespace RelayOrbiter.Plugin
 
         public DeploymentRunner(IReadOnlyList<SequenceStep> steps, Vessel carrier,
                                 uint[] separators, Part[] satelliteParts, string[] names,
-                                uint[][] satellitePartIds, bool extendPanels, bool topUp,
+                                uint[][] satellitePartIds, bool extendPanels, bool topUp, ParkingOrbit parking,
                                 IDeploymentPlanner planner, Func<double, string> formatTime)
         {
             _steps          = steps;
@@ -63,6 +64,7 @@ namespace RelayOrbiter.Plugin
             _satellitePartIds = satellitePartIds;
             _extendPanels   = extendPanels;
             _topUp          = topUp;
+            _parking        = parking;
             _planner        = planner;
             _formatTime     = formatTime;
 
@@ -74,8 +76,8 @@ namespace RelayOrbiter.Plugin
                 orbit.load   = LoadRange;
                 orbit.unload = UnloadRange;
             }
-            Log($"Deployment started. Carrier stays loaded up to {orbit.load / 1000f:F1} km " +
-                $"(was {_savedLoad / 1000f:F1} km).");
+            Log($"Deployment started: {separators.Length} satellites, {parking} parking orbit. " +
+                $"Carrier stays loaded up to {orbit.load / 1000f:F1} km (was {_savedLoad / 1000f:F1} km).");
         }
 
         public RunState State  { get; private set; } = RunState.Running;
@@ -92,7 +94,8 @@ namespace RelayOrbiter.Plugin
             {
                 State = RunState.Done;
                 RestoreRanges();
-                Status = "Constellation deployed: 3 satellites, 120° apart.";
+                int n = _separators.Length;
+                Status = $"Constellation deployed: {n} satellites, {Resonance.SpacingDeg(n):F0}° apart.";
                 Log(Status);
                 return;
             }
@@ -115,7 +118,7 @@ namespace RelayOrbiter.Plugin
         // True while the current step is waiting on time warp.
         public bool CanFastForward =>
             State == RunState.Running && _index < _steps.Count &&
-            (_steps[_index].Kind == StepKind.WarpToApoapsis ||
+            (_steps[_index].Kind == StepKind.WarpToRelease ||
              _steps[_index].Kind == StepKind.ExecuteNode && _executor != null && _executor.IsWaiting);
 
         // Ask for time warp right away (the user's "Fast forward").
@@ -142,10 +145,10 @@ namespace RelayOrbiter.Plugin
             double now = Planetarium.GetUniversalTime();
             switch (s.Kind)
             {
-                case StepKind.WarpToApoapsis:
+                case StepKind.WarpToRelease:
                 {
                     var o = _carrier.orbit;
-                    double apUT = _planner.NextApoapsisUT(now, o.timeToAp, o.period, s.Seconds + 10.0);
+                    double apUT = _planner.NextPassUT(now, ReleasePoint.TimeTo(o, _parking), o.period, s.Seconds + 10.0);
                     if (_index == 0) _parkingUT = apUT;
                     _until = apUT - s.Seconds;
                     _warp.Now();
@@ -197,7 +200,7 @@ namespace RelayOrbiter.Plugin
             double now = Planetarium.GetUniversalTime();
             switch (s.Kind)
             {
-                case StepKind.WarpToApoapsis:
+                case StepKind.WarpToRelease:
                     _warp.Towards(_until);
                     Status = $"Warping: {_formatTime(Math.Max(0.0, _until - now))} to go";
                     // Rate 1x is not enough: while warp winds down the carrier is still on
@@ -404,23 +407,25 @@ namespace RelayOrbiter.Plugin
                     return;
                 }
                 double r = o.getRelativePositionAtUT(ut).magnitude;
-                dv = _planner.Plan(mu, r, o.semiMajorAxis, ut).ParkingDeltaV;
+                dv = _planner.Plan(mu, r, o.semiMajorAxis, ut, _separators.Length, _parking).ParkingDeltaV;
             }
             else
             {
-                // Satellites are on the parking orbit, whose apoapsis is well defined.
-                if (o.timeToAp > o.period / 2.0)
+                // Satellites are on the parking orbit, whose apsides are well defined:
+                // circularize at the release point (apoapsis inner, periapsis outer).
+                double timeTo = ReleasePoint.TimeTo(o, _parking);
+                if (timeTo > o.period / 2.0)
                 {
-                    Fail($"{vessel.vesselName} is already past apoapsis; the release came too late.");
+                    Fail($"{vessel.vesselName} is already past {ReleasePoint.Name(_parking)}; the release came too late.");
                     return;
                 }
-                ut = now + o.timeToAp;
-                dv = _planner.CircularizeAtApoapsis(mu, o.ApR, o.semiMajorAxis);
+                ut = now + timeTo;
+                dv = _planner.CircularizeAt(mu, ReleasePoint.Radius(o, _parking), o.semiMajorAxis);
             }
 
             var node = solver.AddManeuverNode(ut);
             node.OnGizmoUpdated(new Vector3d(0.0, 0.0, dv), ut);  // x radial, y normal, z prograde
-            Log($"Node for {vessel.vesselName}: {dv:F1} m/s prograde at apoapsis.");
+            Log($"Node for {vessel.vesselName}: {dv:F1} m/s prograde at {ReleasePoint.Name(_parking)}.");
         }
 
         // ── Helpers ──────────────────────────────────────────────────────────
@@ -453,7 +458,7 @@ namespace RelayOrbiter.Plugin
 
         private string Describe(SequenceStep s) => s.Kind switch
         {
-            StepKind.WarpToApoapsis        => $"Warp to {s.Seconds:F0} s before apoapsis",
+            StepKind.WarpToRelease         => $"Warp to {s.Seconds:F0} s before {ReleasePoint.Name(_parking)}",
             StepKind.OrientForRelease      => $"Orient the carrier to release {Sat(s.Satellite)}",
             StepKind.Release               => s.Satellite == 0
                                                   ? $"Release {Sat(0)}: it stays on this circular orbit, no burn needed"

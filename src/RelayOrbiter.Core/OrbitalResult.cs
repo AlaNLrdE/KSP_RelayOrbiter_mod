@@ -21,5 +21,12 @@ namespace RelayOrbiter.Core
         public bool    AtmOk        { get; set; }  // periapsis clears the atmosphere
         public double  MinHSurface  { get; set; }  // minimum HTarget for periapsis > 0
         public double? MinHAtm      { get; set; }  // minimum HTarget for periapsis > atm
+
+        public int          Satellites  { get; set; } = 3;
+        public ParkingOrbit Parking     { get; set; } = ParkingOrbit.Inner;
+        public double       SpacingDeg  { get; set; }  // 360° / Satellites
+        public bool         SoiOk       { get; set; }  // parking orbit stays inside the SOI
+        public double       CarrierDv   { get; set; }  // prograde Δv into the parking orbit (negative = retrograde)
+        public double       SatelliteDv { get; set; }  // prograde Δv each satellite needs to circularize
     }
 }

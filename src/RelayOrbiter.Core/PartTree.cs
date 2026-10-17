@@ -40,10 +40,10 @@ namespace RelayOrbiter.Core
             return result;
         }
 
-        public ReleasePlan PlanReleases(IReadOnlyList<SatelliteCandidate> order)
+        public ReleasePlan PlanReleases(IReadOnlyList<SatelliteCandidate> order, int satellites = Satellites)
         {
-            if (order.Count != Satellites)
-                return Fail($"Pick exactly {Satellites} satellites.");
+            if (order.Count != satellites)
+                return Fail($"Pick exactly {satellites} satellites ({order.Count} picked).");
             if (order.Select(c => c.SeparatorId).Distinct().Count() != order.Count)
                 return Fail("Each satellite can be picked only once.");
 

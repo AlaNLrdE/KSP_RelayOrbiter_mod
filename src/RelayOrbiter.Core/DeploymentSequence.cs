@@ -5,7 +5,7 @@ namespace RelayOrbiter.Core
 {
     public enum StepKind
     {
-        WarpToApoapsis,         // warp until Seconds before the carrier's next apoapsis
+        WarpToRelease,          // warp until Seconds before the carrier's next release point
         OrientForRelease,       // turn the carrier so Satellite's separation push is perpendicular to the velocity
         Release,                // fire Satellite's separator
         Wait,                   // let the vessels separate for Seconds
@@ -28,15 +28,16 @@ namespace RelayOrbiter.Core
 
         public StepKind Kind      { get; }
         public int      Satellite { get; }  // 0-based, -1 when not about a satellite
-        public double   Seconds   { get; }  // WarpToApoapsis lead or Wait duration
+        public double   Seconds   { get; }  // WarpToRelease lead, Wait or ClearSatellite duration
     }
 
-    // Steps for the full 3-satellite deployment. SAT-1 is released before the
-    // carrier's parking burn, while the carrier is still circular, so it needs
-    // no burn of its own; SAT-2 and SAT-3 are released one parking orbit apart
-    // and circularize at that apoapsis. Before each release the carrier turns so
+    // Steps for deploying N satellites. SAT-1 is released before the carrier's
+    // parking burn, while the carrier is still circular, so it needs no burn of
+    // its own; SAT-2..SAT-N are released one parking orbit apart and circularize
+    // at the release point (apoapsis for an inner parking orbit, periapsis for an
+    // outer one). Before each release the carrier turns so
     // the separation push is perpendicular to the velocity (SeparationAttitude);
-    // after releasing SAT-2 or SAT-3 it turns away and waits until the satellite is
+    // after releasing SAT-2 onwards it turns away and waits until the satellite is
     // clear, so the satellite can turn for its burn without hitting the carrier.
     public static class DeploymentSequence
     {
@@ -47,15 +48,16 @@ namespace RelayOrbiter.Core
         public const double OrientTime     = 60.0;  // s reserved to orient before each release
         public const double ClearTime      = 45.0;  // s reserved to get clear of SAT-2 / SAT-3
 
-        // carrierBurn: parking burn duration; satelliteBurns: SAT-2 and SAT-3 circularization durations (s).
+        // carrierBurn: parking burn duration; satelliteBurns: circularization durations (s) of
+        // SAT-2..SAT-N, so there are satelliteBurns.Count + 1 satellites.
         public static IReadOnlyList<SequenceStep> Build(double carrierBurn, IReadOnlyList<double> satelliteBurns)
         {
-            if (satelliteBurns.Count != 2)
-                throw new ArgumentException("Need the circularization burns of SAT-2 and SAT-3.", nameof(satelliteBurns));
+            if (satelliteBurns.Count < 1)
+                throw new ArgumentException("Need the circularization burns of SAT-2 onwards.", nameof(satelliteBurns));
 
             var steps = new List<SequenceStep>
             {
-                new SequenceStep(StepKind.WarpToApoapsis,
+                new SequenceStep(StepKind.WarpToRelease,
                                  seconds: carrierBurn / 2 + AlignLead + SeparationWait + ReleaseMargin + OrientTime),
                 new SequenceStep(StepKind.OrientForRelease, satellite: 0),
                 new SequenceStep(StepKind.Release, satellite: 0),
@@ -64,9 +66,9 @@ namespace RelayOrbiter.Core
                 new SequenceStep(StepKind.ExecuteNode),
             };
 
-            for (int k = 1; k <= 2; ++k)
+            for (int k = 1; k <= satelliteBurns.Count; ++k)
             {
-                steps.Add(new SequenceStep(StepKind.WarpToApoapsis,
+                steps.Add(new SequenceStep(StepKind.WarpToRelease,
                           seconds: satelliteBurns[k - 1] / 2 + AlignLead + ClearTime + SwitchMargin + OrientTime));
                 steps.Add(new SequenceStep(StepKind.OrientForRelease, satellite: k));
                 steps.Add(new SequenceStep(StepKind.Release, satellite: k));

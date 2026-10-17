@@ -11,14 +11,14 @@ public class DeploymentSequenceTests
         var kinds = Steps().Select(s => (s.Kind, s.Satellite)).ToArray();
         var expected = new[]
         {
-            (StepKind.WarpToApoapsis, -1),
+            (StepKind.WarpToRelease, -1),
             (StepKind.OrientForRelease, 0),
             (StepKind.Release, 0),
             (StepKind.Wait, -1),
             (StepKind.CreateParkingNode, -1),
             (StepKind.ExecuteNode, -1),
 
-            (StepKind.WarpToApoapsis, -1),
+            (StepKind.WarpToRelease, -1),
             (StepKind.OrientForRelease, 1),
             (StepKind.Release, 1),
             (StepKind.ClearSatellite, 1),
@@ -27,7 +27,7 @@ public class DeploymentSequenceTests
             (StepKind.ExecuteNode, 1),
             (StepKind.SwitchToCarrier, -1),
 
-            (StepKind.WarpToApoapsis, -1),
+            (StepKind.WarpToRelease, -1),
             (StepKind.OrientForRelease, 2),
             (StepKind.Release, 2),
             (StepKind.ClearSatellite, 2),
@@ -51,7 +51,7 @@ public class DeploymentSequenceTests
     [Fact]
     public void LaterReleasesLeaveTimeForSwitchAlignAndHalfBurn()
     {
-        var warps = Steps().Where(s => s.Kind == StepKind.WarpToApoapsis).ToList();
+        var warps = Steps().Where(s => s.Kind == StepKind.WarpToRelease).ToList();
         double fixedLead = DeploymentSequence.AlignLead + DeploymentSequence.ClearTime
                          + DeploymentSequence.SwitchMargin + DeploymentSequence.OrientTime;
         Assert.Equal(90.0 / 2 + fixedLead,  warps[1].Seconds);
@@ -70,9 +70,6 @@ public class DeploymentSequenceTests
         Assert.All(Steps().Where(s => s.Kind == StepKind.ClearSatellite),
                    s => Assert.Equal(DeploymentSequence.ClearTime, s.Seconds));
 
-    [Fact]
-    public void RequiresTwoSatelliteBurns() =>
-        Assert.Throws<ArgumentException>(() => DeploymentSequence.Build(40.0, new[] { 90.0 }));
 
     [Fact]
     public void OrientationTimeoutFitsInTheLead() =>

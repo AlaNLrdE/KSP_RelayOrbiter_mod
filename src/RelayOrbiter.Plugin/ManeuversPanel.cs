@@ -16,9 +16,11 @@ namespace RelayOrbiter.Plugin
         private const double AlarmLead = 60.0;  // s: alarms fire this long before each release
         private const float  LabelW    = 230f;
 
-        private readonly IDeploymentPlanner _planner;
-        private readonly IAltitudePlanner   _altitudes;
-        private readonly Func<double, string> _formatTime;
+        private readonly IDeploymentPlanner       _planner;
+        private readonly IAltitudePlanner         _altitudes;
+        private readonly IConstellationCalculator _calculator;
+        private readonly ConstellationSettings    _settings;
+        private readonly Func<double, string>     _formatTime;
 
         private bool _addAlarms = true;
         private DeploymentPlan? _lastPlan;
@@ -29,10 +31,13 @@ namespace RelayOrbiter.Plugin
         private GUIStyle? _ok, _warn, _header;
 
         public ManeuversPanel(IDeploymentPlanner planner, IAltitudePlanner altitudes,
+                              IConstellationCalculator calculator, ConstellationSettings settings,
                               Func<double, string> formatTime)
         {
             _planner    = planner;
             _altitudes  = altitudes;
+            _calculator = calculator;
+            _settings   = settings;
             _formatTime = formatTime;
         }
 
@@ -57,31 +62,36 @@ namespace RelayOrbiter.Plugin
             Row("Periapsis", Km(orbit.PeA));
             Row("Period",    _formatTime(orbit.period));
 
-            var apStatus = _altitudes.Validate(selected, orbit.ApA);
-            if (apStatus != AltitudeStatus.Ok)
+            // The constellation forms at the release point: apoapsis (inner parking
+            // orbit) or periapsis (outer), whichever is safe at this altitude.
+            int n = _settings.Satellites;
+            var parking = _calculator.Recommend(selected, orbit.ApA, n);
+            string point = ReleasePoint.Name(parking);
+            double rRelease = ReleasePoint.Radius(orbit, parking);
+            var status = _altitudes.Validate(selected, rRelease - selected.Radius);
+            if (status != AltitudeStatus.Ok)
             {
-                Warn($"Apoapsis is not usable ({apStatus}).");
+                Warn($"The {point} is not usable ({status}).");
                 return;
             }
-            if (target.HasValue && Math.Abs(orbit.ApA - target.Value) > Math.Max(0.01 * target.Value, 1_000.0))
-                Warn($"Apoapsis differs from the selected target ({Km(target.Value)}). " +
-                     "The constellation forms at the apoapsis.");
+            if (target.HasValue && Math.Abs(rRelease - selected.Radius - target.Value) > Math.Max(0.01 * target.Value, 1_000.0))
+                Warn($"The {point} differs from the selected target ({Km(target.Value)}). " +
+                     $"The constellation forms at the {point}.");
 
             double now    = Planetarium.GetUniversalTime();
-            double nextAp = _planner.NextApoapsisUT(now, orbit.timeToAp, orbit.period, MinLead);
-            var plan      = _planner.Plan(selected.Mu, orbit.ApR, orbit.semiMajorAxis, nextAp);
-            double hPeri  = plan.PeriapsisRadius - selected.Radius;
-            bool periOk   = hPeri > 0.0 && hPeri >= selected.Atm;
+            double nextAp = _planner.NextPassUT(now, ReleasePoint.TimeTo(orbit, parking), orbit.period, MinLead);
+            var plan      = _planner.Plan(selected.Mu, rRelease, orbit.semiMajorAxis, nextAp, n, parking);
+            bool periOk   = OtherApsisOk(selected, plan, out string otherName, out double hOther, out string problem);
 
-            GUILayout.Label("Parking orbit burn (carrier, at next apoapsis)", _header);
+            GUILayout.Label($"Parking orbit burn (carrier, at next {point}; {parking.ToString().ToLowerInvariant()} " +
+                            $"parking orbit, {n} satellites {Resonance.SpacingDeg(n):F0}° apart)", _header);
             Row("Burn in",            _formatTime(nextAp - now));
-            Row("Δv (retrograde)",    Ms(-plan.ParkingDeltaV));
-            Row("Resulting periapsis", Km(hPeri), periOk ? _ok : _warn);
+            Row("Δv",                 $"{Ms(Math.Abs(plan.ParkingDeltaV))} {ReleasePoint.Direction(plan.ParkingDeltaV)}");
+            Row($"Resulting {otherName}", Km(hOther), periOk ? _ok : _warn);
             Row("Parking period",     _formatTime(plan.ParkingPeriod));
-            Row("Each satellite: circularize", Ms(plan.SatelliteCircularizeDeltaV) + " prograde");
-            if (!periOk)
-                Warn(hPeri <= 0.0 ? "Periapsis would be underground. Raise the apoapsis."
-                                  : "Periapsis would be inside the atmosphere. Raise the apoapsis.");
+            Row("Each satellite: circularize",
+                $"{Ms(Math.Abs(plan.SatelliteCircularizeDeltaV))} {ReleasePoint.Direction(plan.SatelliteCircularizeDeltaV)}");
+            if (!periOk) Warn(problem);
 
             var solver = vessel.patchedConicSolver;
             if (solver == null)
@@ -128,12 +138,14 @@ namespace RelayOrbiter.Plugin
                            (_addAlarms ? $" {alarms} release alarm(s) added." : "");
             }
             GUI.enabled = wasEnabled && existing == 0;
+            GUILayout.BeginHorizontal();
             if (GUILayout.Button("Circularize at next apoapsis"))
-            {
-                double dv = _planner.CircularizeAtApoapsis(selected.Mu, orbit.ApR, orbit.semiMajorAxis);
-                CreateNode(solver, nextAp, dv);
-                _message = $"Circularization node created ({Ms(dv)} prograde).";
-            }
+                Circularize(solver, selected.Mu, orbit.ApR, orbit.semiMajorAxis,
+                            _planner.NextPassUT(now, orbit.timeToAp, orbit.period, MinLead));
+            if (GUILayout.Button("Circularize at next periapsis"))
+                Circularize(solver, selected.Mu, orbit.PeR, orbit.semiMajorAxis,
+                            _planner.NextPassUT(now, orbit.timeToPe, orbit.period, MinLead));
+            GUILayout.EndHorizontal();
             GUI.enabled = wasEnabled;
 
             if (_message.Length > 0) GUILayout.Label(_message, _ok);
@@ -145,14 +157,41 @@ namespace RelayOrbiter.Plugin
         {
             if (_lastPlan == null || _lastPlanVessel != vessel.persistentId) return;
 
-            GUILayout.Label("Release schedule (at apoapsis)", _header);
+            string point = ReleasePoint.Name(_lastPlan.Parking);
+            GUILayout.Label($"Release schedule (at {point})", _header);
             for (int k = 0; k < _lastPlan.ReleaseUTs.Count; ++k)
             {
                 double dt = _lastPlan.ReleaseUTs[k] - now;
                 Row($"SAT-{k + 1}", dt > 0.0 ? "in " + _formatTime(dt) : "passed");
             }
             GUILayout.Label("After each release: switch to the satellite and use " +
-                            "\"Circularize at next apoapsis\".");
+                            $"\"Circularize at next {point}\".");
+        }
+
+        private void Circularize(PatchedConicSolver solver, double mu, double r, double sma, double ut)
+        {
+            double dv = _planner.CircularizeAt(mu, r, sma);
+            CreateNode(solver, ut, dv);
+            _message = $"Circularization node created ({Ms(Math.Abs(dv))} {ReleasePoint.Direction(dv)}).";
+        }
+
+        // Inner parking orbit: its periapsis must clear the surface and atmosphere.
+        // Outer: its apoapsis must stay inside the SOI.
+        private static bool OtherApsisOk(Body body, DeploymentPlan plan,
+                                         out string name, out double altitude, out string problem)
+        {
+            if (plan.Parking == ParkingOrbit.Inner)
+            {
+                name = "periapsis";
+                altitude = plan.PeriapsisRadius - body.Radius;
+                problem = altitude <= 0.0 ? "Periapsis would be underground. Raise the orbit."
+                                          : "Periapsis would be inside the atmosphere. Raise the orbit.";
+                return altitude > 0.0 && altitude >= body.Atm;
+            }
+            name = "apoapsis";
+            altitude = plan.ApoapsisRadius - body.Radius;
+            problem = $"Apoapsis would leave {body.Name}'s sphere of influence. Lower the orbit or use more satellites.";
+            return !body.Soi.HasValue || plan.ApoapsisRadius <= body.Soi.Value;
         }
 
         // ── KSP calls ────────────────────────────────────────────────────────
@@ -172,9 +211,9 @@ namespace RelayOrbiter.Plugin
                 var alarm = new AlarmTypeRaw
                 {
                     title        = $"Release SAT-{k + 1}",
-                    description  = $"{vessel.vesselName}: release SAT-{k + 1} at apoapsis in " +
+                    description  = $"{vessel.vesselName}: release SAT-{k + 1} at {ReleasePoint.Name(plan.Parking)} in " +
                                    $"{AlarmLead:F0} s, then circularize it " +
-                                   $"({Ms(plan.SatelliteCircularizeDeltaV)} prograde).",
+                                   $"({Ms(Math.Abs(plan.SatelliteCircularizeDeltaV))} {ReleasePoint.Direction(plan.SatelliteCircularizeDeltaV)}).",
                     ut           = plan.ReleaseUTs[k] - AlarmLead,
                     vesselId     = vessel.persistentId,
                     vesselName   = vessel.vesselName,

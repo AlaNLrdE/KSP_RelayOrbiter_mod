@@ -45,7 +45,7 @@ public class DeploymentPlannerTests
         double r = kerbin.Radius + 2_863_334.0;
         var p = _planner.Plan(kerbin.Mu, r, r, 500.0);
 
-        Assert.Equal(DeploymentPlanner.Satellites, p.ReleaseUTs.Count);
+        Assert.Equal(3, p.ReleaseUTs.Count);
         Precision.Close(500.0,                       p.ReleaseUTs[0], "SAT-1 release");
         Precision.Close(500.0 + p.ParkingPeriod,     p.ReleaseUTs[1], "SAT-2 release");
         Precision.Close(500.0 + 2 * p.ParkingPeriod, p.ReleaseUTs[2], "SAT-3 release");
@@ -77,7 +77,7 @@ public class DeploymentPlannerTests
     {
         var g = GoldenVectors.Body(name);
         var e = g.Results[index];
-        Precision.Close(e.VC - e.VApo, _planner.CircularizeAtApoapsis(g.Mu, e.RApo, e.AE), "circularize Δv");
+        Precision.Close(e.VC - e.VApo, _planner.CircularizeAt(g.Mu, e.RApo, e.AE), "circularize Δv");
     }
 
     [Fact]
@@ -85,20 +85,20 @@ public class DeploymentPlannerTests
     {
         var kerbin = new KspBodyDatabase().Find("Kerbin")!;
         double r = kerbin.Radius + 100_000.0;
-        Precision.Close(0.0, _planner.CircularizeAtApoapsis(kerbin.Mu, r, r), "circularize Δv");
+        Precision.Close(0.0, _planner.CircularizeAt(kerbin.Mu, r, r), "circularize Δv");
     }
 
     // ── Next apoapsis ─────────────────────────────────────────────────────────
 
     [Fact]
     public void NextApoapsisWhenFarEnoughAway() =>
-        Assert.Equal(1_300.0, _planner.NextApoapsisUT(1_000.0, 300.0, 5_000.0, 60.0));
+        Assert.Equal(1_300.0, _planner.NextPassUT(1_000.0, 300.0, 5_000.0, 60.0));
 
     [Fact]
     public void NextApoapsisSkipsOnePeriodWhenTooClose() =>
-        Assert.Equal(6_010.0, _planner.NextApoapsisUT(1_000.0, 10.0, 5_000.0, 60.0));
+        Assert.Equal(6_010.0, _planner.NextPassUT(1_000.0, 10.0, 5_000.0, 60.0));
 
     [Fact]
     public void NextApoapsisExactlyAtLeadIsKept() =>
-        Assert.Equal(1_060.0, _planner.NextApoapsisUT(1_000.0, 60.0, 5_000.0, 60.0));
+        Assert.Equal(1_060.0, _planner.NextPassUT(1_000.0, 60.0, 5_000.0, 60.0));
 }

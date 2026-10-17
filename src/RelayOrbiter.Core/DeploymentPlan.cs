@@ -27,6 +27,10 @@ namespace RelayOrbiter.Core
         public double CircularPeriod             { get; }  // satellites' final orbit period
         public double ParkingPeriod              { get; }  // carrier parking orbit period = (2/3) CircularPeriod
         public double SatelliteCircularizeDeltaV { get; }  // prograde Δv each satellite needs at apoapsis
-        public IReadOnlyList<double> ReleaseUTs  { get; }  // SAT-1..SAT-3 release times
+        public IReadOnlyList<double> ReleaseUTs  { get; }  // SAT-1..SAT-N release times
+
+        public int          Satellites     => ReleaseUTs.Count;
+        public ParkingOrbit Parking        { get; set; } = ParkingOrbit.Inner;
+        public double       ApoapsisRadius { get; set; }  // parking orbit apoapsis radius
     }
 }

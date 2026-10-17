@@ -21,6 +21,7 @@ namespace RelayOrbiter.Plugin
         private readonly IAltitudePlanner         _planner;
         private readonly IConstellationCalculator _calculator;
         private readonly Func<double, string>     _formatTime;
+        private readonly ConstellationSettings    _settings;
         private readonly ManeuversPanel           _maneuvers;
         private readonly AutomationPanel          _automation;
         private readonly Action                   _onClose;
@@ -36,9 +37,10 @@ namespace RelayOrbiter.Plugin
 
         public RelayOrbiterWindow(IBodyDatabase db, IAltitudePlanner planner,
                                   IConstellationCalculator calculator,
-                                  Func<double, string> formatTime,
+                                  Func<double, string> formatTime, ConstellationSettings settings,
                                   ManeuversPanel maneuvers, AutomationPanel automation, Action onClose)
         {
+            _settings   = settings;
             _db         = db;
             _planner    = planner;
             _calculator = calculator;
@@ -78,6 +80,7 @@ namespace RelayOrbiter.Plugin
             }
             var body = _body!;
 
+            DrawSatelliteCount();
             var option = DrawAltitudeSelector(body);
             GUILayout.Space(6f);
 
@@ -90,9 +93,28 @@ namespace RelayOrbiter.Plugin
                 _automation.Draw(body);
             else if (option == null) { }
             else if (!option.IsValid) GUILayout.Label(StatusText(body, option), _warn);
-            else                      DrawResult(_calculator.Calculate(body, option.Altitude));
+            else
+            {
+                int n = _settings.Satellites;
+                var parking = _calculator.Recommend(body, option.Altitude, n);
+                DrawResult(body, _calculator.Calculate(body, option.Altitude, n, parking));
+            }
 
             GUI.DragWindow();
+        }
+
+        private void DrawSatelliteCount()
+        {
+            bool wasEnabled = GUI.enabled;
+            GUI.enabled = wasEnabled && !_automation.IsRunning;
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Satellites", _header, GUILayout.Width(80f));
+            if (GUILayout.Button("−", GUILayout.Width(24f))) _settings.Satellites--;
+            GUILayout.Label(_settings.Satellites.ToString(CultureInfo.InvariantCulture), GUILayout.Width(24f));
+            if (GUILayout.Button("+", GUILayout.Width(24f))) _settings.Satellites++;
+            GUILayout.Label($"{Resonance.SpacingDeg(_settings.Satellites):F0}° apart");
+            GUILayout.EndHorizontal();
+            GUI.enabled = wasEnabled;
         }
 
         // Track the body the active vessel orbits (it changes with the SOI).
@@ -175,36 +197,43 @@ namespace RelayOrbiter.Plugin
             }
         }
 
-        private void DrawResult(OrbitalResult r)
+        private void DrawResult(Body body, OrbitalResult r)
         {
-            GUILayout.Label("Circular orbit (final satellite orbit)", _header);
+            bool inner = r.Parking == ParkingOrbit.Inner;
+            string point = inner ? "apoapsis" : "periapsis";
+            string other = inner ? "periapsis" : "apoapsis";
+
+            GUILayout.Label($"Final orbit: {r.Satellites} satellites, {r.SpacingDeg:F0}° apart", _header);
             Row("Altitude",         Km(r.HTarget));
             Row("Orbital velocity", Ms(r.VC));
             Row("Orbital period",   _formatTime(r.TC));
 
-            GUILayout.Label("Elliptical parking orbit (carrier)", _header);
-            Row("Apoapsis altitude", Km(r.HApo));
+            GUILayout.Label($"Parking orbit (carrier, {(inner ? "inner" : "outer")}: released at {point})", _header);
+            Row("Apoapsis altitude",  Km(r.HApo),
+                inner || r.SoiOk ? GUI.skin.label : _warn);
             string periNote = !r.SurfaceOk ? "  BELOW SURFACE" : !r.AtmOk ? "  INSIDE ATMOSPHERE" : "";
             Row("Periapsis altitude", Km(r.HPeri) + periNote, r.SurfaceOk && r.AtmOk ? _ok : _warn);
-            Row("Orbital period",    _formatTime(r.TE));
-            Row("Speed at apoapsis",  Ms(r.VApo));
-            Row("Speed at periapsis", Ms(r.VPeri));
-            Row("Circularize burn at apoapsis", Ms(r.VC - r.VApo));
+            Row("Orbital period",     _formatTime(r.TE));
+            Row("Carrier burn",       $"{Ms(Math.Abs(r.CarrierDv))} {ReleasePoint.Direction(r.CarrierDv)} at {point}");
+            Row("Each satellite",     $"{Ms(Math.Abs(r.SatelliteDv))} {ReleasePoint.Direction(r.SatelliteDv)} at {point}");
 
             if (!r.SurfaceOk)
                 GUILayout.Label($"Periapsis is underground. Minimum target altitude: {Km(r.MinHSurface)}", _warn);
             else if (!r.AtmOk && r.MinHAtm.HasValue)
                 GUILayout.Label($"Periapsis is inside the atmosphere. Minimum target altitude: {Km(r.MinHAtm.Value)}", _warn);
+            if (!r.SoiOk)
+                GUILayout.Label($"The parking orbit's apoapsis leaves {body.Name}'s SOI. " +
+                                "Choose a lower altitude or more satellites.", _warn);
 
             GUILayout.Label("Deployment procedure", _header);
             string te = _formatTime(r.TE);
             GUILayout.Label(
-                $"1. Circularize the carrier at {Km(r.HTarget)}.\n" +
-                $"2. At apoapsis, burn retrograde to lower periapsis to {Km(r.HPeri)}.\n" +
-                $"3. At apoapsis: release SAT-1; it circularizes ({Ms(r.VC - r.VApo)} prograde).\n" +
-                $"4. Wait one parking orbit ({te}); release SAT-2 at apoapsis.\n" +
-                $"5. Wait one more orbit ({te}); release SAT-3 at apoapsis.\n" +
-                "Result: 3 satellites, 120° apart.");
+                $"1. Circularize the carrier at {Km(r.HTarget)} and release SAT-1 (it stays there).\n" +
+                $"2. Burn {ReleasePoint.Direction(r.CarrierDv)} {Ms(Math.Abs(r.CarrierDv))}: the {other} goes to " +
+                $"{Km(inner ? r.HPeri : r.HApo)}.\n" +
+                $"3. Every parking orbit ({te}), at {point}, release the next satellite; it burns " +
+                $"{ReleasePoint.Direction(r.SatelliteDv)} {Ms(Math.Abs(r.SatelliteDv))} to circularize.\n" +
+                $"Result: {r.Satellites} satellites, {r.SpacingDeg:F0}° apart, after {r.Satellites - 1} parking orbits.");
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────

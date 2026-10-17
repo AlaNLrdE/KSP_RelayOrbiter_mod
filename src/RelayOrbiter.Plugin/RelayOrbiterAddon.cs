@@ -21,6 +21,7 @@ namespace RelayOrbiter.Plugin
         private ApplicationLauncherButton? _button;
         private RelayOrbiterWindow? _window;
         private KSP.IO.PluginConfiguration? _config;
+        private readonly ConstellationSettings _settings = new ConstellationSettings();
         private bool _locked, _uiHidden;
 
         private void Start()
@@ -95,12 +96,13 @@ namespace RelayOrbiter.Plugin
             var mechanics  = new OrbitalMechanics();
             var altitudes  = new AltitudePlanner(db, mechanics);
             var deployment = new DeploymentPlanner(mechanics);
+            var calculator = new ConstellationCalculator(mechanics);
             Func<double, string> formatTime = t => KSPUtil.PrintTime(t, 5, false);  // honours the game's calendar
 
             var window = new RelayOrbiterWindow(
-                db, altitudes, new ConstellationCalculator(mechanics), formatTime,
-                new ManeuversPanel(deployment, altitudes, formatTime),
-                new AutomationPanel(deployment, altitudes, formatTime),
+                db, altitudes, calculator, formatTime, _settings,
+                new ManeuversPanel(deployment, altitudes, calculator, _settings, formatTime),
+                new AutomationPanel(deployment, altitudes, calculator, _settings, formatTime),
                 CloseWindow);
             LoadSettings(window);
             return window;
@@ -122,6 +124,7 @@ namespace RelayOrbiter.Plugin
             _config.load();
             window.Position = new Vector2(_config.GetValue("windowX", 240f), _config.GetValue("windowY", 120f));
             window.Tab = _config.GetValue("tab", 0);
+            _settings.Satellites = _config.GetValue("satellites", 3);
         }
 
         private void SaveSettings()
@@ -130,6 +133,7 @@ namespace RelayOrbiter.Plugin
             _config.SetValue("windowX", _window.Position.x);
             _config.SetValue("windowY", _window.Position.y);
             _config.SetValue("tab", _window.Tab);
+            _config.SetValue("satellites", _settings.Satellites);
             _config.save();
         }
 

@@ -18,9 +18,11 @@ namespace RelayOrbiter.Plugin
         private const double MaxSeparation = 15_000.0;  // m
         private const float  LabelW = 230f;
 
-        private readonly IDeploymentPlanner _planner;
-        private readonly IAltitudePlanner _altitudes;
-        private readonly Func<double, string> _formatTime;
+        private readonly IDeploymentPlanner       _planner;
+        private readonly IAltitudePlanner         _altitudes;
+        private readonly IConstellationCalculator _calculator;
+        private readonly ConstellationSettings    _settings;
+        private readonly Func<double, string>     _formatTime;
 
         private readonly List<uint> _order = new List<uint>();  // separator flight ids
         private uint _orderVessel;
@@ -31,10 +33,13 @@ namespace RelayOrbiter.Plugin
         private GUIStyle? _ok, _warn, _header;
 
         public AutomationPanel(IDeploymentPlanner planner, IAltitudePlanner altitudes,
+                               IConstellationCalculator calculator, ConstellationSettings settings,
                                Func<double, string> formatTime)
         {
             _planner    = planner;
             _altitudes  = altitudes;
+            _calculator = calculator;
+            _settings   = settings;
             _formatTime = formatTime;
         }
 
@@ -53,12 +58,6 @@ namespace RelayOrbiter.Plugin
             var orbit = vessel.orbit;
             GUILayout.Label($"Carrier: {vessel.vesselName}", _header);
 
-            if (vessel.situation != Vessel.Situations.ORBITING) { Warn("Get into a stable orbit first."); return; }
-            if (_altitudes.Validate(selected, orbit.ApA) != AltitudeStatus.Ok) { Warn("The apoapsis is not usable."); return; }
-            var solver = vessel.patchedConicSolver;
-            if (solver == null) { Warn("Maneuver nodes are not available yet."); return; }
-            if (solver.maneuverNodes.Count > 0) { Warn("Delete the vessel's maneuver nodes first (Maneuvers tab)."); return; }
-
             bool newVessel = _orderVessel != vessel.persistentId;
             if (newVessel) { _order.Clear(); _orderVessel = vessel.persistentId; }
 
@@ -70,7 +69,7 @@ namespace RelayOrbiter.Plugin
                           $"Separators: {VesselParts.DescribeSeparators(vessel)}");
             _order.RemoveAll(id => candidates.All(c => c.SeparatorId != id));
 
-            GUILayout.Label("Satellites (click in release order)", _header);
+            GUILayout.Label($"Satellites (click {_settings.Satellites} in release order)", _header);
             if (candidates.Count == 0)
             {
                 Warn("No satellites found: each must hang on a decoupler or a docking-port pair and have a probe core.");
@@ -86,27 +85,46 @@ namespace RelayOrbiter.Plugin
             }
 
             var order = _order.Select(id => candidates.First(c => c.SeparatorId == id)).ToList();
-            var releases = tree.PlanReleases(order);
-            if (!releases.IsValid) { Warn(releases.Error!); return; }
+            int n = _settings.Satellites;
+            var releases = tree.PlanReleases(order, n);
+            if (!releases.IsValid)
+            {
+                Warn(candidates.Count < n
+                    ? $"{n} satellites need {n} probe cores on separators; this vessel has {candidates.Count}."
+                    : releases.Error!);
+                return;
+            }
 
+            // The vessel's checks come after the satellites', so they show on the launch pad too.
+            if (vessel.situation != Vessel.Situations.ORBITING) { Warn("Get into a stable orbit first."); return; }
+            if (_altitudes.Validate(selected, orbit.ApA) != AltitudeStatus.Ok) { Warn("The apoapsis is not usable."); return; }
+            var solver = vessel.patchedConicSolver;
+            if (solver == null) { Warn("Maneuver nodes are not available yet."); return; }
+            if (solver.maneuverNodes.Count > 0) { Warn("Delete the vessel's maneuver nodes first (Maneuvers tab)."); return; }
+
+            // Inner parking orbit (released at apoapsis) when its periapsis is safe, else outer (periapsis).
+            var parking = _calculator.Recommend(selected, orbit.ApA, n);
+            string point = ReleasePoint.Name(parking);
             double now  = Planetarium.GetUniversalTime();
-            double ap   = _planner.NextApoapsisUT(now, orbit.timeToAp, orbit.period, 60.0);
-            var plan    = _planner.Plan(selected.Mu, orbit.ApR, orbit.semiMajorAxis, ap);
-            double hPeri = plan.PeriapsisRadius - selected.Radius;
+            double ut   = _planner.NextPassUT(now, ReleasePoint.TimeTo(orbit, parking), orbit.period, 60.0);
+            var plan    = _planner.Plan(selected.Mu, ReleasePoint.Radius(orbit, parking), orbit.semiMajorAxis, ut, n, parking);
             double carrierBurn = BurnTiming.Duration(plan.ParkingDeltaV, releases.CarrierMassAfterFirst,
                                                      releases.CarrierThrust, releases.CarrierIsp) ?? 0.0;
             var satBurns = releases.Satellites.Skip(1)
                 .Select(s => BurnTiming.Duration(plan.SatelliteCircularizeDeltaV, s.Mass, s.Thrust, s.Isp) ?? 0.0)
                 .ToArray();
+            string satDir = ReleasePoint.Direction(plan.SatelliteCircularizeDeltaV);
 
-            GUILayout.Label("Plan", _header);
+            GUILayout.Label($"Plan: {n} satellites, {Resonance.SpacingDeg(n):F0}° apart", _header);
+            Row("Parking orbit", ParkingDescription(selected, orbit.ApA, n, parking));
             Row($"SAT-1 {releases.Satellites[0].Candidate.Name}",
                 "released before the carrier's burn; stays on this circular orbit, no burn of its own");
-            Row("Carrier parking burn", $"{Ms(-plan.ParkingDeltaV)} retrograde, {carrierBurn:F0} s");
-            for (int k = 1; k < 3; ++k)
+            Row("Carrier parking burn",
+                $"{Ms(Math.Abs(plan.ParkingDeltaV))} {ReleasePoint.Direction(plan.ParkingDeltaV)}, {carrierBurn:F0} s");
+            for (int k = 1; k < n; ++k)
                 Row($"SAT-{k + 1} {releases.Satellites[k].Candidate.Name}",
-                    $"{Ms(plan.SatelliteCircularizeDeltaV)} prograde, {satBurns[k - 1]:F0} s");
-            Row("Total time", "about " + _formatTime(2.0 * plan.ParkingPeriod + orbit.timeToAp));
+                    $"{Ms(Math.Abs(plan.SatelliteCircularizeDeltaV))} {satDir}, {satBurns[k - 1]:F0} s");
+            Row("Total time", "about " + _formatTime((n - 1) * plan.ParkingPeriod + (ut - now)));
 
             // Fuel: each satellite's tanks, and what the carrier (outside the satellites) can give.
             var satIds = order.SelectMany(c => c.PartIds).ToList();
@@ -114,7 +132,7 @@ namespace RelayOrbiter.Plugin
             var carrierTanks = VesselParts.Tanks(vessel,
                 vessel.parts.Select(p => p.flightID).Where(id => !satIds.Contains(id)));
             var transfers = ResourceTopUp.Plan(satTanks, carrierTanks);
-            for (int k = 0; k < 3; ++k)
+            for (int k = 0; k < n; ++k)
             {
                 double fill = ResourceTopUp.FillFraction(VesselParts.Tanks(vessel, order[k].PartIds));
                 Row($"SAT-{k + 1} fuel", fill >= 0.999 ? "full"
@@ -125,14 +143,21 @@ namespace RelayOrbiter.Plugin
                 Warn("The carrier doesn't have enough fuel to fill every satellite; they get what is left.");
 
             var problems = new List<string>();
-            if (hPeri <= 0.0 || hPeri < selected.Atm)
-                problems.Add("The parking orbit's periapsis would be too low. Raise the apoapsis.");
-            for (int k = 0; k < 3; ++k)
+            if (parking == ParkingOrbit.Inner)
+            {
+                double hPeri = plan.PeriapsisRadius - selected.Radius;
+                if (hPeri <= 0.0 || hPeri < selected.Atm)
+                    problems.Add("The parking orbit's periapsis would be too low. Raise the orbit.");
+            }
+            else if (selected.Soi.HasValue && plan.ApoapsisRadius > selected.Soi.Value)
+                problems.Add($"The parking orbit's apoapsis would leave {selected.Name}'s SOI. " +
+                             "Lower the orbit or use more satellites.");
+            for (int k = 0; k < n; ++k)
             {
                 var s = releases.Satellites[k];
                 if (k > 0 && VesselParts.SasLevel(vessel, s.Candidate.PartIds) < 1)
                     problems.Add($"SAT-{k + 1} has no probe core with SAS (level 1+) to point its burn.");
-                if (k > 0 && plan.SatelliteCircularizeDeltaV * satBurns[k - 1] / 2.0 > MaxSeparation)
+                if (k > 0 && Math.Abs(plan.SatelliteCircularizeDeltaV) * satBurns[k - 1] / 2.0 > MaxSeparation)
                     problems.Add($"SAT-{k + 1}'s burn is too long ({satBurns[k - 1]:F0} s): it would leave " +
                                  "the carrier's loading range. Use a stronger engine.");
             }
@@ -152,21 +177,31 @@ namespace RelayOrbiter.Plugin
                         transfers.GroupBy(t => t.Resource).Select(g => $"{g.Key} +{g.Sum(t => t.Amount):F1}")));
                     _startRequested = true;
                 }
-                else StartRun(vessel, order, carrierBurn, satBurns);
+                else StartRun(vessel, order, carrierBurn, satBurns, parking);
             }
             else if (_startRequested && Event.current.type == EventType.Repaint)
             {
                 // Repaint is the last pass of the frame: the next Layout pass sees the runner.
                 _startRequested = false;
-                if (problems.Count == 0) StartRun(vessel, order, carrierBurn, satBurns);
+                if (problems.Count == 0) StartRun(vessel, order, carrierBurn, satBurns, parking);
             }
             GUI.enabled = wasEnabled;
             GUILayout.Label("While it runs: don't touch the controls and don't switch vessels or leave the " +
-                            "flight scene; the mod switches to SAT-2 and SAT-3 itself. Time warp is handled for you.",
+                            $"flight scene; the mod switches to SAT-2 … SAT-{n} itself. Time warp is handled for you.",
                             _warn);
         }
 
-        private void StartRun(Vessel vessel, List<SatelliteCandidate> order, double carrierBurn, double[] satBurns)
+        private string ParkingDescription(Body body, double altitude, int n, ParkingOrbit parking)
+        {
+            if (parking == ParkingOrbit.Inner)
+                return "INNER: below the target, released at apoapsis";
+            var inner = _calculator.Calculate(body, altitude, n, ParkingOrbit.Inner);
+            string why = !inner.SurfaceOk ? "underground" : "inside the atmosphere";
+            return $"OUTER: above the target, released at periapsis (the inner orbit's periapsis would be {why})";
+        }
+
+        private void StartRun(Vessel vessel, List<SatelliteCandidate> order, double carrierBurn, double[] satBurns,
+                              ParkingOrbit parking)
         {
             var parts = order.Select(c => VesselParts.CommandPart(vessel, c)).ToArray();
             if (parts.Any(p => p == null))
@@ -178,7 +213,7 @@ namespace RelayOrbiter.Plugin
                 DeploymentSequence.Build(carrierBurn, satBurns), vessel,
                 order.Select(c => c.SeparatorId).ToArray(), parts!,
                 order.Select(c => c.Name).ToArray(),
-                order.Select(c => c.PartIds.ToArray()).ToArray(), _extendPanels, _topUp,
+                order.Select(c => c.PartIds.ToArray()).ToArray(), _extendPanels, _topUp, parking,
                 _planner, _formatTime);
         }
 
