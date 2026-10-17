@@ -21,7 +21,7 @@ public class DeploymentSequenceTests
             (StepKind.WarpToApoapsis, -1),
             (StepKind.OrientForRelease, 1),
             (StepKind.Release, 1),
-            (StepKind.Wait, -1),
+            (StepKind.ClearSatellite, 1),
             (StepKind.SwitchToSatellite, 1),
             (StepKind.CreateCircularizeNode, 1),
             (StepKind.ExecuteNode, 1),
@@ -30,7 +30,7 @@ public class DeploymentSequenceTests
             (StepKind.WarpToApoapsis, -1),
             (StepKind.OrientForRelease, 2),
             (StepKind.Release, 2),
-            (StepKind.Wait, -1),
+            (StepKind.ClearSatellite, 2),
             (StepKind.SwitchToSatellite, 2),
             (StepKind.CreateCircularizeNode, 2),
             (StepKind.ExecuteNode, 2),
@@ -52,16 +52,23 @@ public class DeploymentSequenceTests
     public void LaterReleasesLeaveTimeForSwitchAlignAndHalfBurn()
     {
         var warps = Steps().Where(s => s.Kind == StepKind.WarpToApoapsis).ToList();
-        double fixedLead = DeploymentSequence.AlignLead + DeploymentSequence.SeparationWait
+        double fixedLead = DeploymentSequence.AlignLead + DeploymentSequence.ClearTime
                          + DeploymentSequence.SwitchMargin + DeploymentSequence.OrientTime;
         Assert.Equal(90.0 / 2 + fixedLead,  warps[1].Seconds);
         Assert.Equal(100.0 / 2 + fixedLead, warps[2].Seconds);
     }
 
     [Fact]
-    public void WaitsAreTheSeparationWait() =>
-        Assert.All(Steps().Where(s => s.Kind == StepKind.Wait),
-                   s => Assert.Equal(DeploymentSequence.SeparationWait, s.Seconds));
+    public void OnlySat1UsesAPlainSeparationWait()
+    {
+        var wait = Assert.Single(Steps().Where(s => s.Kind == StepKind.Wait));
+        Assert.Equal(DeploymentSequence.SeparationWait, wait.Seconds);
+    }
+
+    [Fact]
+    public void ClearingIsLimitedToTheTimeReservedForIt() =>
+        Assert.All(Steps().Where(s => s.Kind == StepKind.ClearSatellite),
+                   s => Assert.Equal(DeploymentSequence.ClearTime, s.Seconds));
 
     [Fact]
     public void RequiresTwoSatelliteBurns() =>

@@ -127,7 +127,7 @@ namespace RelayOrbiter.Plugin
                 Row($"SAT-{k + 1} fuel", fill >= 0.999 ? "full"
                     : $"{fill:P0}" + (_topUp ? ", topped up from the carrier at start" : ""));
             }
-            _topUp = GUILayout.Toggle(_topUp, " Top up the satellites' tanks from the carrier at start");
+            _topUp = GUILayout.Toggle(_topUp, " Top up the satellites' tanks from the carrier (at start and before each release)");
             if (_topUp && ResourceTopUp.Shortfall(satTanks, transfers) > 1e-3)
                 Warn("The carrier doesn't have enough fuel to fill every satellite; they get what is left.");
 
@@ -185,7 +185,7 @@ namespace RelayOrbiter.Plugin
                 DeploymentSequence.Build(carrierBurn, satBurns), vessel,
                 order.Select(c => c.SeparatorId).ToArray(), parts!,
                 order.Select(c => c.Name).ToArray(),
-                order.Select(c => c.PartIds.ToArray()).ToArray(), _extendPanels,
+                order.Select(c => c.PartIds.ToArray()).ToArray(), _extendPanels, _topUp,
                 _planner, _formatTime);
         }
 

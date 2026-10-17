@@ -9,6 +9,7 @@ namespace RelayOrbiter.Core
         OrientForRelease,       // turn the carrier so Satellite's separation push is perpendicular to the velocity
         Release,                // fire Satellite's separator
         Wait,                   // let the vessels separate for Seconds
+        ClearSatellite,         // carrier turns away; wait (up to Seconds) until Satellite is clear
         SwitchToSatellite,
         SwitchToCarrier,
         CreateParkingNode,      // carrier: parking-orbit burn at the next apoapsis
@@ -34,7 +35,9 @@ namespace RelayOrbiter.Core
     // carrier's parking burn, while the carrier is still circular, so it needs
     // no burn of its own; SAT-2 and SAT-3 are released one parking orbit apart
     // and circularize at that apoapsis. Before each release the carrier turns so
-    // the separation push is perpendicular to the velocity (SeparationAttitude).
+    // the separation push is perpendicular to the velocity (SeparationAttitude);
+    // after releasing SAT-2 or SAT-3 it turns away and waits until the satellite is
+    // clear, so the satellite can turn for its burn without hitting the carrier.
     public static class DeploymentSequence
     {
         public const double AlignLead      = 60.0;  // s reserved to point before a burn starts
@@ -42,6 +45,7 @@ namespace RelayOrbiter.Core
         public const double SwitchMargin   = 15.0;  // s for the vessel switch to settle
         public const double ReleaseMargin  = 30.0;  // s spare before SAT-1's release
         public const double OrientTime     = 60.0;  // s reserved to orient before each release
+        public const double ClearTime      = 45.0;  // s reserved to get clear of SAT-2 / SAT-3
 
         // carrierBurn: parking burn duration; satelliteBurns: SAT-2 and SAT-3 circularization durations (s).
         public static IReadOnlyList<SequenceStep> Build(double carrierBurn, IReadOnlyList<double> satelliteBurns)
@@ -63,10 +67,10 @@ namespace RelayOrbiter.Core
             for (int k = 1; k <= 2; ++k)
             {
                 steps.Add(new SequenceStep(StepKind.WarpToApoapsis,
-                          seconds: satelliteBurns[k - 1] / 2 + AlignLead + SeparationWait + SwitchMargin + OrientTime));
+                          seconds: satelliteBurns[k - 1] / 2 + AlignLead + ClearTime + SwitchMargin + OrientTime));
                 steps.Add(new SequenceStep(StepKind.OrientForRelease, satellite: k));
                 steps.Add(new SequenceStep(StepKind.Release, satellite: k));
-                steps.Add(new SequenceStep(StepKind.Wait, seconds: SeparationWait));
+                steps.Add(new SequenceStep(StepKind.ClearSatellite, satellite: k, seconds: ClearTime));
                 steps.Add(new SequenceStep(StepKind.SwitchToSatellite, satellite: k));
                 steps.Add(new SequenceStep(StepKind.CreateCircularizeNode, satellite: k));
                 steps.Add(new SequenceStep(StepKind.ExecuteNode, satellite: k));
