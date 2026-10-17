@@ -73,9 +73,9 @@ namespace RelayOrbiter.Plugin
         {
             var db        = new GameBodyDatabase(FlightGlobals.Bodies);
             var mechanics = new OrbitalMechanics();
-            var initial   = FlightGlobals.ActiveVessel != null
-                ? FlightGlobals.ActiveVessel.mainBody.bodyName
-                : FlightGlobals.GetHomeBodyName();
+            var initial   = GameBodyDatabase.NameOf(FlightGlobals.ActiveVessel != null
+                ? FlightGlobals.ActiveVessel.mainBody
+                : FlightGlobals.GetHomeBody());
             return new RelayOrbiterWindow(
                 db,
                 new AltitudePlanner(db, mechanics),

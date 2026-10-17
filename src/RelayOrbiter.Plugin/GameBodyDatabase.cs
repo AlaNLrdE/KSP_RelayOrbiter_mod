@@ -28,16 +28,20 @@ namespace RelayOrbiter.Plugin
                    .OrderBy(b => b.OrbitalRadius ?? 0.0)
                    .ToArray();
 
+        // Name shown to the player ("Kerbol"), not the internal bodyName ("Sun").
+        // Used as the body's identifier everywhere in the plugin.
+        public static string NameOf(KspBody b) => b.displayName.LocalizeRemoveGender();
+
         private static Body Convert(KspBody b)
         {
             // A star has no orbit driver, and its referenceBody is itself.
             bool isStar = b.orbitDriver == null || b.referenceBody == null || b.referenceBody == b;
             return BodyFactory.FromGame(
-                b.bodyName, b.Radius, b.gravParameter,
+                NameOf(b), b.Radius, b.gravParameter,
                 b.atmosphere, b.atmosphereDepth,
                 b.rotationPeriod, b.sphereOfInfluence,
                 isStar ? (double?)null : b.orbitDriver!.orbit.semiMajorAxis,
-                isStar ? null : b.referenceBody!.bodyName);
+                isStar ? null : NameOf(b.referenceBody!));
         }
     }
 }
