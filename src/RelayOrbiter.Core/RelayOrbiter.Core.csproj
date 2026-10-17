@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Pure orbital math, no Unity/KSP references: loadable by KSP's Mono runtime
+       and testable from modern .NET. -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <RootNamespace>RelayOrbiter.Core</RootNamespace>
+  </PropertyGroup>
+
+</Project>
