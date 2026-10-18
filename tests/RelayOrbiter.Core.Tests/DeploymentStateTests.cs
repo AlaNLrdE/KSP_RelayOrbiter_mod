@@ -103,6 +103,9 @@ public class DeploymentStateTests
         s.Destination = "Ike"; s.Via = "Duna"; s.Interplanetary = true; s.UseMechJeb = true;
         var r = RoundTrip(s);
         Assert.True(r.UseMechJeb);
+        Assert.Null(r.GoalLan);
+        s.GoalLan = 123.5;
+        Assert.Equal(123.5, RoundTrip(s).GoalLan);
         Assert.Equal("Ike", r.Destination);
         Assert.Equal("Duna", r.Via);
         Assert.True(r.Interplanetary);

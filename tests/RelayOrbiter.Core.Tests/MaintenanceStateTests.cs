@@ -68,8 +68,8 @@ public class MaintenanceStateTests
             seen.Add(s.Stage[1]);
             s.Advance(1, phaseOk: true);
         }
-        Assert.Equal(new[] { CorrectionStage.Transfer, CorrectionStage.Circularize, CorrectionStage.Phase,
-                             CorrectionStage.PhaseReturn, CorrectionStage.Trim }, seen);
+        Assert.Equal(new[] { CorrectionStage.Transfer, CorrectionStage.Circularize, CorrectionStage.PlaneLate, CorrectionStage.Apsis,
+                             CorrectionStage.Phase, CorrectionStage.PhaseReturn, CorrectionStage.Trim }, seen);
     }
 
     [Fact]
@@ -138,12 +138,12 @@ public class MaintenanceStateTests
     [Fact]
     public void ProgressCountsBurnsDoneAgainstThoseThatMayBeLeft()
     {
-        var s = Sample(reference: 0);           // two satellites to correct, 5 burns each at most
+        var s = Sample(reference: 0);           // two satellites to correct, 6 burns each at most
         Precision.Close(0.0, s.Progress, "start");
         s.Stage[1] = CorrectionStage.Done;
         s.BurnsDone = 3;
-        Precision.Close(3.0 / 8.0, s.Progress, "one done");
-        Assert.Equal(8, s.BurnsEstimate);
+        Precision.Close(3.0 / 9.0, s.Progress, "one done");
+        Assert.Equal(9, s.BurnsEstimate);
         s.Stage[2] = CorrectionStage.Done;
         Precision.Close(1.0, s.Progress, "all done");
     }
@@ -177,5 +177,75 @@ public class MaintenanceStateTests
         var v = new Dictionary<string, string>(Sample().ToValues());
         v.Remove("MatchPlanes"); v.Remove("PlaneInclination"); v.Remove("PlaneLan");
         Assert.False(MaintenanceState.FromValues(v).MatchPlanes);
+    }
+
+    // ── Shapes ────────────────────────────────────────────────────────────────
+
+    private static MaintenanceState Shaped(string? anchor = null)
+    {
+        var spec = ConstellationShapes.WalkerDelta(4, 2, 1, 45, 3e6);
+        var members = ConstellationShapes.Slots(spec)
+            .Select(x => new ShapeMember(x.InclinationDeg, StationKeeping.Mod360(20 + x.LanOffsetDeg),
+                                         StationKeeping.Mod360(5 + x.PhaseOffsetDeg)))
+            .ToList();
+        var fit = ShapeFit.Fit(spec, members);
+        return MaintenanceState.StartShaped(new uint[] { 1, 2, 3, 4 }, fit, 100.0, 5000.0, null, 1, 7e5, 8e7, anchor);
+    }
+
+    [Fact]
+    public void ShapedStateKeepsEveryMembersTarget()
+    {
+        var s = Shaped();
+        Assert.True(s.Shaped);
+        Assert.True(s.MatchPlanes);
+        Assert.All(s.Stage, st => Assert.Equal(CorrectionStage.Plane, st));
+        Assert.Equal(2, s.TargetLan.Select(l => Math.Round(l, 6)).Distinct().Count());
+        Assert.All(s.TargetInc, inc => Assert.Equal(45.0, inc, 6));
+        Assert.Equal(new OrbitPlane(45, s.TargetLan[1]).LanDeg, s.TargetPlane(1).LanDeg);
+        Assert.False(s.TargetElliptical(0));
+    }
+
+    [Fact]
+    public void ShapedSlotPhaseAdvancesWithItsOffset()
+    {
+        var s = Shaped();
+        int i = Array.IndexOf(s.SlotOf, s.SlotOf.First(x => s.PhaseOffset[Array.IndexOf(s.SlotOf, x)] > 0));
+        double atEpoch = s.SlotPhaseDeg(i, 100.0);
+        Precision.Close(StationKeeping.Mod360(s.OffsetDeg + s.PhaseOffset[i]), atEpoch, "epoch");
+        Precision.Close(StationKeeping.Mod360(atEpoch + 90.0), s.SlotPhaseDeg(i, 100.0 + 1250.0), "quarter period");
+    }
+
+    [Fact]
+    public void TrojanSlotsFollowTheMoonsPhase()
+    {
+        var s = Shaped("Mun");
+        Precision.Close(StationKeeping.Mod360(30.0 + s.PhaseOffset[0]), s.SlotPhaseDeg(0, 9999.0, anchorPhase: 30.0), "anchor");
+    }
+
+    [Fact]
+    public void ShapedStateRoundTrips()
+    {
+        var s = Shaped("Mun");
+        s.Stage[2] = CorrectionStage.Apsis;
+        var r = MaintenanceState.FromValues(new Dictionary<string, string>(s.ToValues()));
+        Assert.True(r.Shaped);
+        Assert.Equal(s.TargetLan, r.TargetLan);
+        Assert.Equal(s.PhaseOffset, r.PhaseOffset);
+        Assert.Equal(s.TargetSmas, r.TargetSmas);
+        Assert.Equal("Mun", r.AnchorBody);
+        Assert.Equal(CorrectionStage.Apsis, r.Stage[2]);
+    }
+
+    [Fact]
+    public void ApsisComesBetweenCircularizeAndPhase()
+    {
+        var s = Shaped();
+        s.Stage[0] = CorrectionStage.Circularize;
+        s.Advance(0, true);
+        Assert.Equal(CorrectionStage.PlaneLate, s.Stage[0]);
+        s.Advance(0, true);
+        Assert.Equal(CorrectionStage.Apsis, s.Stage[0]);
+        s.Advance(0, true);
+        Assert.Equal(CorrectionStage.Phase, s.Stage[0]);
     }
 }

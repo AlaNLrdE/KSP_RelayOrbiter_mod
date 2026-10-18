@@ -31,6 +31,7 @@ namespace RelayOrbiter.Core
         public string?  Via             { get; set; }          // its parent, reached first (a moon of another planet)
         public bool     Interplanetary  { get; set; }          // the first leg goes to a sibling of the body orbited
         public bool     UseMechJeb      { get; set; }          // MechJeb plans the ejections and corrections
+        public double?  GoalLan         { get; set; }          // with GoalInclination: a whole plane (a Walker plane)
         public float    SavedLoad       { get; set; }          // carrier's own load range, to restore
         public float    SavedUnload     { get; set; }
 
@@ -72,6 +73,7 @@ namespace RelayOrbiter.Core
             if (Via != null) v["Via"] = Uri.EscapeDataString(Via);
             if (Interplanetary) v["Interplanetary"] = Interplanetary.ToString(Inv);
             if (UseMechJeb) v["UseMechJeb"] = UseMechJeb.ToString(Inv);
+            if (GoalLan.HasValue) v["GoalLan"] = Num(GoalLan.Value);
             return v;
         }
 
@@ -106,6 +108,7 @@ namespace RelayOrbiter.Core
                 Via              = values.TryGetValue("Via", out var via) ? Uri.UnescapeDataString(via) : null,
                 Interplanetary   = values.TryGetValue("Interplanetary", out var ip) && bool.Parse(ip),
                 UseMechJeb       = values.TryGetValue("UseMechJeb", out var mj) && bool.Parse(mj),
+                GoalLan          = values.TryGetValue("GoalLan", out var gl) ? ParseNum(gl) : (double?)null,
                 SavedLoad        = float.Parse(Get("SavedLoad"), Inv),
                 SavedUnload      = float.Parse(Get("SavedUnload"), Inv),
             };

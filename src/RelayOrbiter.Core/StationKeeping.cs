@@ -36,6 +36,7 @@ namespace RelayOrbiter.Core
         public const int    MinSlots           = 2;
         public const int    MaxSlots           = 36;
         public const double ShapeToleranceRel  = 0.01;   // apsides this close to the target: no transfer
+        public const double CircularEccentricity = 0.01; // target orbits below this count as circular
 
         // Fit N slots to the satellites' mean longitudes (degrees), keeping their order
         // around the orbit. reference: that satellite defines the slots (it needs no
