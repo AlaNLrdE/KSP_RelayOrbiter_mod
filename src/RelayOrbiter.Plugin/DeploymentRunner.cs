@@ -17,6 +17,7 @@ namespace RelayOrbiter.Plugin
         private const double MinClearance  = 10.0;  // m between carrier and satellite before switching
         private const double MinTurnDeg    = 60.0;  // carrier turn that moves its end off the satellite's path
         private const double ClearDelay    = 2.0;   // s after release before the carrier starts turning
+        private const double OrientSasWait = 10.0;  // s for SAS to accept the orientation mode (just out of warp)
         private const double MinNodeLead   = 60.0;  // s: never place a transfer node closer than this
         // KSP unloads orbiting vessels 2.5 km from the active one; switching back to an
         // unloaded carrier reloads the scene and ends the run. Keep it loaded meanwhile.
@@ -69,6 +70,8 @@ namespace RelayOrbiter.Plugin
         private NodeExecutor? _executor;
         private readonly Warp _warp = new Warp();
         private bool _orienting;  // false when orientation was skipped
+        private bool _modeSet;    // SAS has accepted the orientation mode
+        private double _orientSince;
         private VesselAutopilot.AutopilotMode _orientMode;
         private double _alignedSince = double.NaN;
         // Parking burn time, fixed at the first warp: on a near-circular orbit the
@@ -453,16 +456,20 @@ namespace RelayOrbiter.Plugin
                 ? VesselAutopilot.AutopilotMode.Normal
                 : VesselAutopilot.AutopilotMode.Prograde;
             _orientMode = mode;
-            _orienting = axis != Vector3.zero && ap.CanSetMode(mode);
+            _orientSince = now;
+            // SAS on first: KSP refuses the mode while SAS is off, and for a moment after the
+            // carrier leaves time warp. AdvanceOrient keeps trying for a few seconds.
+            _carrier.ActionGroups.SetGroup(KSPActionGroup.SAS, true);
+            _orienting = axis != Vector3.zero;
             if (!_orienting)
             {
-                Log($"Can't point {mode}: releasing {Sat(k)} without orienting " +
-                    $"({VesselParts.ControlReport(_carrier)}).");
+                Log($"No separation axis for {Sat(k)}: releasing without orienting.");
                 return;
             }
-            _carrier.ActionGroups.SetGroup(KSPActionGroup.SAS, true);
-            ap.SetMode(mode);
-            Log($"Pointing {mode} so {Sat(k)}'s separation push is perpendicular to the velocity.");
+            _modeSet = ap.CanSetMode(mode);
+            if (_modeSet) ap.SetMode(mode);
+            Log($"Pointing {mode} so {Sat(k)}'s separation push is perpendicular to the velocity" +
+                (_modeSet ? "." : " (waiting for SAS to accept the mode)."));
         }
 
         private bool AdvanceOrient(int k, double now)
@@ -471,6 +478,23 @@ namespace RelayOrbiter.Plugin
             if (!_orienting) return true;
             // KSP drops the mode if SAS wasn't on yet when it was set: keep applying it.
             _carrier.ActionGroups.SetGroup(KSPActionGroup.SAS, true);
+            if (!_modeSet)
+            {
+                _modeSet = _carrier.Autopilot.CanSetMode(_orientMode);
+                if (!_modeSet)
+                {
+                    if (now - _orientSince < OrientSasWait)
+                    {
+                        Status = $"Waiting for SAS to accept {_orientMode}";
+                        return false;
+                    }
+                    Log($"Can't point {_orientMode}: releasing {Sat(k)} without orienting " +
+                        $"({VesselParts.ControlReport(_carrier)}).");
+                    _orienting = false;
+                    return true;
+                }
+                Log($"SAS accepted {_orientMode} after {now - _orientSince:F1} s.");
+            }
             if (_carrier.Autopilot.Mode != _orientMode) _carrier.Autopilot.SetMode(_orientMode);
             double angle = Vector3.Angle(SeparationAxis(k), (Vector3)_carrier.obt_velocity);
             bool still = _carrier.angularVelocity.magnitude < MaxSpinRate;
