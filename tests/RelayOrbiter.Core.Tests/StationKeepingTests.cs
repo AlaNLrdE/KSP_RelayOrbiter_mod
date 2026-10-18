@@ -86,8 +86,10 @@ public class StationKeepingTests
     {
         var names = Enumerable.Range(1, 30).Select(k => $"Relay {k}").ToList();
         Assert.Equal(30, ConstellationGroup.Suggest("Relay 1", names)!.Count);
-        var many = Enumerable.Range(1, 50).Select(k => $"Relay {k}").ToList();
-        Assert.Equal(StationKeeping.MaxSlots, ConstellationGroup.Suggest("Relay 1", many)!.Count);
+        var many = Enumerable.Range(1, 96).Select(k => $"Relay {k}").ToList();
+        Assert.Equal(96, ConstellationGroup.Suggest("Relay 1", many)!.Count);
+        var tooMany = Enumerable.Range(1, StationKeeping.MaxSlots + 10).Select(k => $"Relay {k}").ToList();
+        Assert.Equal(StationKeeping.MaxSlots, ConstellationGroup.Suggest("Relay 1", tooMany)!.Count);
     }
 
     [Fact]

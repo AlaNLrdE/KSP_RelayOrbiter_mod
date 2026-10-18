@@ -54,8 +54,8 @@ namespace RelayOrbiter.Core
                          double eccentricity = 0.0, double argPeDeg = 0.0)
         {
             if (total < 1) throw new ArgumentOutOfRangeException(nameof(total));
-            if (planes < 1 || total % planes != 0)
-                throw new ArgumentException($"{total} satellites don't split into {planes} planes.", nameof(planes));
+            if (planes < 1 || planes > total)
+                throw new ArgumentException($"{total} satellites can't fill {planes} planes.", nameof(planes));
             Kind           = kind;
             Total          = total;
             Planes         = planes;
@@ -69,7 +69,10 @@ namespace RelayOrbiter.Core
         public ShapeKind Kind  { get; }
         public int    Total    { get; }  // T
         public int    Planes   { get; }  // P
-        public int    PerPlane => Total / Planes;
+        // Satellites in plane p: as even as possible (the first Total mod Planes planes
+        // take one more when they don't split exactly).
+        public int    InPlane(int p) => Total / Planes + (p < Total % Planes ? 1 : 0);
+        public bool   Even     => Total % Planes == 0;
         public int    Phasing  { get; }  // F (0..P−1)
         public double InclinationDeg { get; }
         public double Sma      { get; }
@@ -164,15 +167,19 @@ namespace RelayOrbiter.Core
                     break;
                 default:
                 {
-                    // Walker i:T/P/F (a ring is P = 1): node p·ΔΩ, phase s·360/S + p·F·360/T.
+                    // Walker i:T/P/F (a ring is P = 1): node p·ΔΩ, phase s·360/S_p + p·F·360/T,
+                    // S_p the satellites of plane p (as even as possible).
                     double nodeSpread = s.Kind == ShapeKind.WalkerStar ? 180.0 : 360.0;
-                    int perPlane = s.PerPlane;
+                    int index = 0;
                     for (int p = 0; p < s.Planes; ++p)
-                        for (int k = 0; k < perPlane; ++k)
-                            slots.Add(new SlotOrbit(p * perPlane + k, p, s.InclinationDeg, p * nodeSpread / s.Planes,
+                    {
+                        int inPlane = s.InPlane(p);
+                        for (int k = 0; k < inPlane; ++k)
+                            slots.Add(new SlotOrbit(index++, p, s.InclinationDeg, p * nodeSpread / s.Planes,
                                                     s.Sma, s.Eccentricity, s.ArgPeDeg,
-                                                    StationKeeping.Mod360(k * 360.0 / perPlane +
+                                                    StationKeeping.Mod360(k * 360.0 / inPlane +
                                                                           p * s.Phasing * 360.0 / s.Total)));
+                    }
                     break;
                 }
             }
