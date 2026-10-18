@@ -27,9 +27,17 @@ namespace RelayOrbiter.Core
         public bool     Transfer        { get; set; }
         public bool     PlaneChange     { get; set; }
         public bool     PlaneChangeFirst { get; set; }
-        public string?  Destination     { get; set; }          // moon to travel to first (body name); null: stay
+        public string?  Destination     { get; set; }          // body to travel to first (name); null: stay
+        public string?  Via             { get; set; }          // its parent, reached first (a moon of another planet)
+        public bool     Interplanetary  { get; set; }          // the first leg goes to a sibling of the body orbited
+        public bool     UseMechJeb      { get; set; }          // MechJeb plans the ejections and corrections
         public float    SavedLoad       { get; set; }          // carrier's own load range, to restore
         public float    SavedUnload     { get; set; }
+
+        // The steps before the deployment, from what was saved: travel legs, then the
+        // transfer to the target orbit and the plane change.
+        public TransferSteps Prelude => new TransferSteps(Transfer, PlaneChange, PlaneChangeFirst,
+            moon: Destination != null && (!Interplanetary || Via != null), interplanetary: Interplanetary);
 
         private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
@@ -61,6 +69,9 @@ namespace RelayOrbiter.Core
             if (Names != null) v["Names"] = string.Join(",", Names.Select(Uri.EscapeDataString));
             if (GoalInclination.HasValue) v["GoalInclination"] = Num(GoalInclination.Value);
             if (Destination != null) v["Destination"] = Uri.EscapeDataString(Destination);
+            if (Via != null) v["Via"] = Uri.EscapeDataString(Via);
+            if (Interplanetary) v["Interplanetary"] = Interplanetary.ToString(Inv);
+            if (UseMechJeb) v["UseMechJeb"] = UseMechJeb.ToString(Inv);
             return v;
         }
 
@@ -92,6 +103,9 @@ namespace RelayOrbiter.Core
                 PlaneChange      = bool.Parse(Get("PlaneChange")),
                 PlaneChangeFirst = bool.Parse(Get("PlaneChangeFirst")),
                 Destination      = values.TryGetValue("Destination", out var d) ? Uri.UnescapeDataString(d) : null,
+                Via              = values.TryGetValue("Via", out var via) ? Uri.UnescapeDataString(via) : null,
+                Interplanetary   = values.TryGetValue("Interplanetary", out var ip) && bool.Parse(ip),
+                UseMechJeb       = values.TryGetValue("UseMechJeb", out var mj) && bool.Parse(mj),
                 SavedLoad        = float.Parse(Get("SavedLoad"), Inv),
                 SavedUnload      = float.Parse(Get("SavedUnload"), Inv),
             };

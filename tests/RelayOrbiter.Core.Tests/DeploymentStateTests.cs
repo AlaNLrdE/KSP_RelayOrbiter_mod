@@ -95,4 +95,30 @@ public class DeploymentStateTests
         Assert.Equal("The Mun", RoundTrip(s).Destination);
         Assert.Null(RoundTrip(Sample()).Destination);
     }
+
+    [Fact]
+    public void RouteRoundTrips()
+    {
+        var s = Sample();
+        s.Destination = "Ike"; s.Via = "Duna"; s.Interplanetary = true; s.UseMechJeb = true;
+        var r = RoundTrip(s);
+        Assert.True(r.UseMechJeb);
+        Assert.Equal("Ike", r.Destination);
+        Assert.Equal("Duna", r.Via);
+        Assert.True(r.Interplanetary);
+    }
+
+    [Theory]
+    [InlineData(null, null, false, false, false)]   // stay
+    [InlineData("Mun", null, false, true, false)]   // a moon
+    [InlineData("Duna", null, true, false, true)]   // a planet
+    [InlineData("Ike", "Duna", true, true, true)]   // a moon of a planet
+    public void PreludeFollowsTheRoute(string? destination, string? via, bool interplanetary, bool moon, bool ip)
+    {
+        var s = Sample();
+        s.Destination = destination; s.Via = via; s.Interplanetary = interplanetary;
+        Assert.Equal(moon, s.Prelude.Moon);
+        Assert.Equal(ip, s.Prelude.Interplanetary);
+        Assert.Equal(s.Transfer, s.Prelude.Transfer);
+    }
 }

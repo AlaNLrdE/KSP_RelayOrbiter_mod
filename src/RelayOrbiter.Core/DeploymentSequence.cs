@@ -22,21 +22,28 @@ namespace RelayOrbiter.Core
         CreateEjectionNode,           // carrier: leave for the destination moon at the next window
         CreateCourseCorrectionNode,   // carrier: fine-tune the encounter's periapsis (skipped when good)
         WarpToSoi,                    // warp until the carrier enters the destination's sphere of influence
+        WarpToMidcourse,              // interplanetary: warp to halfway, for a second correction
         CreateCaptureNode,            // carrier: circularize at the periapsis around the destination
     }
 
     // What to do before the deployment to reach the target orbit.
     public sealed class TransferSteps
     {
-        public TransferSteps(bool transfer, bool planeChange, bool planeChangeFirst, bool moon = false)
+        public TransferSteps(bool transfer, bool planeChange, bool planeChangeFirst, bool moon = false,
+                             bool interplanetary = false)
         {
             Transfer         = transfer;
             PlaneChange      = planeChange;
             PlaneChangeFirst = planeChangeFirst;
             Moon             = moon;
+            Interplanetary   = interplanetary;
         }
 
-        public bool Moon             { get; }  // first travel to a moon of the current body
+        // Travel first, in legs: to a sibling of the current body (Interplanetary), then
+        // (or only) to a moon of the body the carrier is around by then (Moon).
+        public bool Moon             { get; }
+        public bool Interplanetary   { get; }
+        public int  Legs => (Moon ? 1 : 0) + (Interplanetary ? 1 : 0);
 
         public bool Transfer         { get; }
         public bool PlaneChange      { get; }
@@ -45,12 +52,15 @@ namespace RelayOrbiter.Core
 
     public sealed class SequenceStep
     {
-        public SequenceStep(StepKind kind, int satellite = -1, double seconds = 0.0)
+        public SequenceStep(StepKind kind, int satellite = -1, double seconds = 0.0, int leg = 0)
         {
             Kind      = kind;
             Satellite = satellite;
             Seconds   = seconds;
+            Leg       = leg;
         }
+
+        public int      Leg       { get; }  // travel steps: which leg (0 first)
 
         public StepKind Kind      { get; }
         public int      Satellite { get; }  // 0-based, -1 when not about a satellite
@@ -85,15 +95,25 @@ namespace RelayOrbiter.Core
             var steps = new List<SequenceStep>();
             if (prelude != null)
             {
-                void Burn(StepKind create) =>
-                    steps.AddRange(new[] { new SequenceStep(create), new SequenceStep(StepKind.ExecuteNode) });
-                if (prelude.Moon)
+                void Burn(StepKind create, int leg = 0) =>
+                    steps.AddRange(new[] { new SequenceStep(create, leg: leg), new SequenceStep(StepKind.ExecuteNode, leg: leg) });
+                if (prelude.Interplanetary)
                 {
-                    Burn(StepKind.CreateMoonPlaneNode);
                     Burn(StepKind.CreateEjectionNode);
+                    Burn(StepKind.CreateCourseCorrectionNode);
+                    steps.Add(new SequenceStep(StepKind.WarpToMidcourse));
                     Burn(StepKind.CreateCourseCorrectionNode);
                     steps.Add(new SequenceStep(StepKind.WarpToSoi));
                     Burn(StepKind.CreateCaptureNode);
+                }
+                if (prelude.Moon)
+                {
+                    int leg = prelude.Interplanetary ? 1 : 0;
+                    Burn(StepKind.CreateMoonPlaneNode, leg);
+                    Burn(StepKind.CreateEjectionNode, leg);
+                    Burn(StepKind.CreateCourseCorrectionNode, leg);
+                    steps.Add(new SequenceStep(StepKind.WarpToSoi, leg: leg));
+                    Burn(StepKind.CreateCaptureNode, leg);
                 }
                 if (prelude.PlaneChange && prelude.PlaneChangeFirst) Burn(StepKind.CreatePlaneChangeNode);
                 if (prelude.Transfer)
