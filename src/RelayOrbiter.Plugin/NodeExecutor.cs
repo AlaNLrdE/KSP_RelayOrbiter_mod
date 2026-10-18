@@ -16,6 +16,9 @@ namespace RelayOrbiter.Plugin
         private const double AlignTimeout = 60.0;  // s allowed to point before giving up
         private const double FlameoutGrace = 2.0;  // s without thrust before giving up
         private const double SasWait       = 30.0; // s to wait for SAS (just switched, panels charging)
+        private const double AlignedDeg    = 1.0;  // pointing this close: aligned
+        private const float  StillRate     = 0.02f; // rad/s: no longer turning
+        private const double IgnitionLead  = 10.0; // s before ignition to stop warping once aligned
 
         private readonly Vessel _vessel;
         private readonly Func<double, string> _formatTime;
@@ -104,7 +107,11 @@ namespace RelayOrbiter.Plugin
                 {
                     _throttle = 0f;
                     IsWaiting = true;
-                    _warp.Towards(start - DeploymentSequence.AlignLead);
+                    // Pointing time is only needed until it points: once aligned and still,
+                    // warp on (rails warp keeps the attitude) until just before ignition.
+                    bool aligned = Vector3.Angle(_vessel.ReferenceTransform.up, (Vector3)burnVec) < AlignedDeg &&
+                                   _vessel.angularVelocity.magnitude < StillRate;
+                    _warp.Towards(start - (aligned ? IgnitionLead : DeploymentSequence.AlignLead));
                     Status = $"Burn of {dvLeft:F1} m/s in {_formatTime(start - now)} ({duration:F0} s)";
                     return Result.Running;
                 }
