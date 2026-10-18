@@ -102,11 +102,11 @@ namespace RelayOrbiter.Plugin
             GUILayout.BeginHorizontal();
             GUILayout.Label("Slots", _header, GUILayout.Width(80f));
             if (GUILayout.Button("−", GUILayout.Width(24f))) _slots--;
-            _slots = Mathf.Clamp(_slots, Math.Max(Resonance.MinSatellites, members.Count), Resonance.MaxSatellites);
+            _slots = Mathf.Clamp(_slots, Math.Max(StationKeeping.MinSlots, members.Count), StationKeeping.MaxSlots);
             GUILayout.Label(_slots.ToString(CultureInfo.InvariantCulture), GUILayout.Width(24f));
             if (GUILayout.Button("+", GUILayout.Width(24f))) _slots++;
-            _slots = Mathf.Clamp(_slots, Math.Max(Resonance.MinSatellites, members.Count), Resonance.MaxSatellites);
-            GUILayout.Label($"{Resonance.SpacingDeg(_slots):F0}° apart");
+            _slots = Mathf.Clamp(_slots, Math.Max(StationKeeping.MinSlots, members.Count), StationKeeping.MaxSlots);
+            GUILayout.Label($"{360.0 / _slots:0.#}° apart");
             GUILayout.EndHorizontal();
 
             int active = members.IndexOf(vessel);
@@ -121,6 +121,7 @@ namespace RelayOrbiter.Plugin
                 : null;
 
             GUILayout.Label("Satellites (tick the members)   slot · off by · drift per orbit", _header);
+            BeginList(candidates.Count, ref _listScroll);
             foreach (var v in candidates)
             {
                 int i = members.IndexOf(v);
@@ -135,6 +136,7 @@ namespace RelayOrbiter.Plugin
                     if (on) _selected.Add(v.persistentId); else _selected.Remove(v.persistentId);
                 }
             }
+            EndList(candidates.Count);
             if (members.Count > _slots) { Warn($"{members.Count} satellites don't fit in {_slots} slots."); return; }
             if (members.Count < 2) { Warn("Tick at least two satellites."); return; }
 
@@ -155,6 +157,8 @@ namespace RelayOrbiter.Plugin
             GUILayout.Label("(more: slower, less Δv)");
             GUILayout.EndHorizontal();
             _matchPlanes = GUILayout.Toggle(_matchPlanes, "Match the orbital planes too (plane change first)");
+            NodeExecutor.AutoActivateEngines = GUILayout.Toggle(NodeExecutor.AutoActivateEngines,
+                "Activate the satellites' engines when none is running before a burn");
             if (_matchPlanes)
             {
                 var plane = CommonPlane(members, reference, null);
@@ -473,6 +477,21 @@ namespace RelayOrbiter.Plugin
         private static double MaxRadius(Body body) => body.Soi ?? double.MaxValue;
 
         // ── Helpers ──────────────────────────────────────────────────────────
+
+        // Long lists scroll, so the window stays on screen.
+        private const int   ListRows = 12;
+        private const float ListHeight = 300f;
+        private Vector2 _listScroll, _planeScroll;
+
+        private static void BeginList(int rows, ref Vector2 scroll)
+        {
+            if (rows > ListRows) scroll = GUILayout.BeginScrollView(scroll, GUILayout.Height(ListHeight));
+        }
+
+        private static void EndList(int rows)
+        {
+            if (rows > ListRows) GUILayout.EndScrollView();
+        }
 
         private static string Short(string name) => name.Length <= NameChars ? name : name.Substring(0, NameChars - 1) + "…";
 

@@ -31,8 +31,14 @@ namespace RelayOrbiter.Plugin
         private Body?   _body;  // the body the active vessel orbits
         private AltitudeSource _source = AltitudeSource.Synchronous;
         private int     _child, _midA, _midB = 1;
+        private int     _deployAt;  // 0: around the body orbited, k: around its k-th moon
         private string  _customKm = "1000";
         private int     _tab;  // 0 = results, 1 = maneuvers, 2 = automation, 3 = maintenance
+        private Vector2 _scroll;
+        private float   _contentHeight = 300f;     // height of the tab content (last repaint)
+        private float   _bodyTop = 200f;           // y of the tab content inside the window (last repaint)
+        private const float MinBodyHeight = 200f;  // the content may always use this much
+        private const float BottomMargin  = 20f;   // px kept free below the window
 
         private GUIStyle? _ok, _warn, _header;
 
@@ -75,7 +81,13 @@ namespace RelayOrbiter.Plugin
         public void Draw()
         {
             if (_ok == null) CreateStyles();
+            // GUILayout.Window only ever grows the rect: start from no height every frame,
+            // so it fits the content and shrinks again when the content does.
+            _rect.height = 0f;
             _rect = GUILayout.Window(WindowId, _rect, DrawContents, "Relay Orbiter", GUILayout.Width(Width));
+            // Keep it on screen.
+            _rect.x = Mathf.Clamp(_rect.x, 0f, Mathf.Max(0f, Screen.width - _rect.width));
+            _rect.y = Mathf.Clamp(_rect.y, 0f, Mathf.Max(0f, Screen.height - MinBodyHeight - 60f));
         }
 
         // ── Layout ────────────────────────────────────────────────────────────
@@ -90,16 +102,18 @@ namespace RelayOrbiter.Plugin
                 GUI.DragWindow();
                 return;
             }
-            var body = _body!;
+            var current = _body!;
 
             if (_automation.IsRunning || _automation.IsLaunching || _automation.HasPending) _tab = 2;
             if (_maintenance.IsRunning || _maintenance.HasPending) _tab = 3;
 
             // The satellite count and target altitude are for a new deployment.
             AltitudeOption? option = null;
+            var body = current;  // where the constellation goes
             if (_tab != 3)
             {
                 DrawSatelliteCount();
+                body = DrawDestination(current);
                 option = DrawAltitudeSelector(body);
                 GUILayout.Space(6f);
             }
@@ -108,12 +122,24 @@ namespace RelayOrbiter.Plugin
             if (_automation.IsRunning || _automation.IsLaunching || _automation.HasPending) _tab = 2;
             if (_maintenance.IsRunning || _maintenance.HasPending) _tab = 3;
 
+            // The tab's content scrolls once it would run off the bottom of the screen.
+            if (Event.current.type == EventType.Repaint) _bodyTop = GUILayoutUtility.GetLastRect().yMax;
+            float maxHeight = Mathf.Max(MinBodyHeight, Screen.height - _rect.y - _bodyTop - BottomMargin);
+            // An explicit height (the content's, measured last frame, capped): a scroll view
+            // left to auto-layout inside an auto-sized window collapses or never shrinks.
+            float height = Mathf.Min(_contentHeight + 4f, maxHeight);
+            _scroll = GUILayout.BeginScrollView(_scroll, false, false, GUIStyle.none, GUI.skin.verticalScrollbar,
+                                                GUILayout.Height(height));
+            GUILayout.BeginVertical();
             if (_tab == 3)
-                _maintenance.Draw(body);
+                _maintenance.Draw(current);
+            else if (_tab == 1 && body != current)
+                GUILayout.Label($"The Maneuvers tab plans around {current.Name}, the body you orbit. " +
+                                $"Use Automation to travel to {body.Name} and deploy there.", _warn);
             else if (_tab == 1)
                 _maneuvers.Draw(body, option != null && option.IsValid ? option.Altitude : (double?)null);
             else if (_tab == 2)
-                _automation.Draw(body, option != null && option.IsValid ? option.Altitude : (double?)null,
+                _automation.Draw(current, body, option != null && option.IsValid ? option.Altitude : (double?)null,
                                  option == null ? "Enter a valid target altitude."
                                  : option.IsValid ? null : StatusText(body, option));
             else if (option == null) { }
@@ -124,6 +150,9 @@ namespace RelayOrbiter.Plugin
                 var parking = _calculator.Recommend(body, option.Altitude, n);
                 DrawResult(body, _calculator.Calculate(body, option.Altitude, n, parking));
             }
+            GUILayout.EndVertical();
+            if (Event.current.type == EventType.Repaint) _contentHeight = GUILayoutUtility.GetLastRect().height;
+            GUILayout.EndScrollView();
 
             GUI.DragWindow();
         }
@@ -151,14 +180,31 @@ namespace RelayOrbiter.Plugin
             if (_body == null || _body.Name != name)
             {
                 _body = _db.Find(name);
-                _child = 0; _midA = 0; _midB = 1;
+                _child = 0; _midA = 0; _midB = 1; _deployAt = 0;
             }
             return _body != null;
         }
 
+        // Deploy around the body orbited, or travel to one of its moons first (not from
+        // the Sun: interplanetary transfers come later).
+        private Body DrawDestination(Body current)
+        {
+            var moons = current.Parent == null ? new List<Body>() : _db.ChildrenOf(current.Name).ToList();
+            if (moons.Count == 0 || _automation.IsRunning || _automation.IsLaunching) return Destination(current, moons);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Deploy around", _header, GUILayout.Width(110f));
+            _deployAt = Mathf.Clamp(_deployAt, 0, moons.Count);
+            _deployAt = GUILayout.Toolbar(_deployAt, new[] { current.Name }.Concat(moons.Select(m => m.Name)).ToArray());
+            GUILayout.EndHorizontal();
+            return Destination(current, moons);
+        }
+
+        private Body Destination(Body current, List<Body> moons) =>
+            _deployAt > 0 && _deployAt <= moons.Count ? moons[_deployAt - 1] : current;
+
         private AltitudeOption? DrawAltitudeSelector(Body body)
         {
-            GUILayout.Label($"Orbiting {body.Name}{AtmHint(body)} — target altitude", _header);
+            GUILayout.Label($"{(body == _body ? "Orbiting" : "Around")} {body.Name}{AtmHint(body)} — target altitude", _header);
 
             var kids = _db.ChildrenOf(body.Name);
             var sources = new List<AltitudeSource> { AltitudeSource.Synchronous };
