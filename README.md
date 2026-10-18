@@ -23,6 +23,9 @@ Full documentation: **<https://alanlrde.github.io/KSP_RelayOrbiter_mod/>**
   satellite, vessel switching and circularization burns, with time warp handled.
 - **Launch from the pad with MechJeb** (optional): MechJeb flies the ascent, Relay
   Orbiter takes over in orbit.
+- **Deploy at another body:** travel first to a moon, another planet or a planet's moon
+  (Mun, Duna, Ike...): window, ejection fine-tuned against KSP's prediction, course
+  corrections, capture. MechJeb's maneuver planner can be used instead.
 - **Safe by design:** checks the plan before starting (satellites, SAS, engines,
   fuel and delta-v of the carrier alone, safe periapsis, SOI), never stages away a
   satellite, tops up the satellites' tanks before each release, orients the carrier
