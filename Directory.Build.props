@@ -1,4 +1,9 @@
 <Project>
+  <!-- Release version of the mod (every assembly). -->
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
   <!-- Machine-specific KSP install paths (see KspPaths.props.example). -->
   <Import Project="$(MSBuildThisFileDirectory)KspPaths.props"
           Condition="Exists('$(MSBuildThisFileDirectory)KspPaths.props')" />
