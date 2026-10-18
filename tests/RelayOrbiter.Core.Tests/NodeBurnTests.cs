@@ -73,4 +73,12 @@ public class NodeBurnTests
         Assert.False(b.Update(3.0));
         Assert.True(b.Update(-0.2));  // remaining Δv now points backwards along the burn
     }
+
+    [Fact]
+    public void PreciseBurnKeepsGoingBelowTheNormalCutOff()
+    {
+        var b = new NodeBurn(NodeBurn.PreciseDv);
+        Assert.False(b.Update(NodeBurn.DoneDv / 2));
+        Assert.True(b.Update(NodeBurn.PreciseDv / 2));
+    }
 }
