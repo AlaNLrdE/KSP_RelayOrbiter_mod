@@ -43,6 +43,28 @@ namespace RelayOrbiter.Plugin
             return from;  // already in the plane: any time will do
         }
 
+        // Next time after `from` the orbit's position points along dir (within one
+        // period): a scan, then a golden-section refinement.
+        public static double NextAlignment(Orbit o, Vector3d dir, double from)
+        {
+            const int steps = 180;
+            double Off(double t) => Vector3d.Angle(o.getRelativePositionAtUT(t), dir);
+            double dt = o.period / steps, bestT = from, best = double.MaxValue;
+            for (int k = 0; k < steps; ++k)
+            {
+                double t = from + k * dt, a = Off(t);
+                if (a < best) { best = a; bestT = t; }
+            }
+            double lo = Math.Max(from, bestT - dt), hi = bestT + dt;
+            const double g = 0.6180339887498949;
+            for (int i = 0; i < 40; ++i)
+            {
+                double c = hi - g * (hi - lo), d = lo + g * (hi - lo);
+                if (Off(c) < Off(d)) hi = d; else lo = c;
+            }
+            return (lo + hi) / 2.0;
+        }
+
         // (prograde, normal) Δv rotating the velocity by angleDeg at speed; the normal
         // sign is settled by CheckSign.
         public static (double prograde, double normal) DeltaV(double speed, double angleDeg)

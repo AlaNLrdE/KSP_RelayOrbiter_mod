@@ -37,6 +37,7 @@ namespace RelayOrbiter.Plugin
         private readonly InterplanetaryPlanner _interplanetary = new InterplanetaryPlanner(new OrbitalMechanics());
         private readonly double _goalRadius;          // target circular orbit radius
         private readonly double? _goalInclination;    // degrees; null = keep the current plane
+        private readonly double? _goalLan;            // with it: a whole plane (inclination and node)
         private bool _skipExecute;                    // the node step found nothing to do
         private bool _nextNeedsManeuverMode;          // the next node is a plane change
         private readonly List<CelestialBody> _legs = new List<CelestialBody>();  // bodies to travel to, in order
@@ -94,6 +95,7 @@ namespace RelayOrbiter.Plugin
             _parking          = state.Parking;
             _goalRadius       = state.GoalRadius;
             _goalInclination  = state.GoalInclination;
+            _goalLan          = state.GoalLan;
             _useMechJeb       = state.UseMechJeb;
             foreach (var name in new[] { state.Via, state.Destination })
             {
@@ -670,6 +672,22 @@ namespace RelayOrbiter.Plugin
                     if (Math.Abs(dv) < 0.1) { Skip("Already circular at the target."); return; }
                     AddNode(solver, ut, new Vector3d(0.0, 0.0, dv));
                     Log($"Circularize at the target: {dv:F1} m/s prograde at {(atAp ? "apoapsis" : "periapsis")}.");
+                    break;
+                }
+                case StepKind.CreatePlaneChangeNode when _goalInclination.HasValue && _goalLan.HasValue:
+                {
+                    // A whole plane (a Walker plane): where the two planes cross.
+                    var plane = new OrbitPlane(_goalInclination.Value, _goalLan.Value);
+                    double angle = PlaneMatch.AngleDeg(o, plane, now);
+                    if (angle < PlaneChange.ToleranceDeg) { Skip($"{angle:F2}° from the target plane: no plane change."); return; }
+                    double ut = PlaneMatch.NextCrossing(o, PlaneMatch.TargetNormal(plane, o, now), now + MinNodeLead);
+                    var (prograde, normal) = PlaneMatch.DeltaV(o.getOrbitalVelocityAtUT(ut).magnitude, angle);
+                    var node = solver.AddManeuverNode(ut);
+                    node.OnGizmoUpdated(new Vector3d(0.0, normal, prograde), ut);
+                    PlaneMatch.CheckSign(solver, node, ut, prograde, normal, plane, Log);
+                    _nextNeedsManeuverMode = true;
+                    Log($"Into the target plane (i {plane.InclinationDeg:F2}°, Ω {plane.LanDeg:F2}°): {angle:F2}°, " +
+                        $"{PlaneGrouping.PlaneChangeDv(o.getOrbitalVelocityAtUT(ut).magnitude, angle):F1} m/s.");
                     break;
                 }
                 case StepKind.CreatePlaneChangeNode:

@@ -109,6 +109,8 @@ namespace RelayOrbiter.Plugin
             GUILayout.Label($"{360.0 / _slots:0.#}° apart");
             GUILayout.EndHorizontal();
 
+            if (DrawShapeSelector()) { DrawShaped(body, vessel, candidates, members); return; }
+
             int active = members.IndexOf(vessel);
             int? reference = ReferenceIndex(members);
             double mu = vessel.mainBody.gravParameter;
@@ -393,6 +395,7 @@ namespace RelayOrbiter.Plugin
                 foreach (var v in candidates)
                     if (_suggestion.Members.Contains(v.vesselName)) _selected.Add(v.persistentId);
                 _slots = _suggestion.Count;
+                SuggestShape(candidates.Where(v => _selected.Contains(v.persistentId)).ToList());
             }
             else
             {
