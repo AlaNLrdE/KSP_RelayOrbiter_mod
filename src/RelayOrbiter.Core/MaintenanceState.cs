@@ -6,7 +6,7 @@ using System.Linq;
 namespace RelayOrbiter.Core
 {
     // What a satellite still has to do to be back in its slot, in order.
-    public enum CorrectionStage { Transfer, Circularize, Phase, PhaseReturn, Trim, Done }
+    public enum CorrectionStage { Plane, Transfer, Circularize, Phase, PhaseReturn, Trim, Done }
 
     // The slots, frozen when a correction starts: slot k's mean longitude advances at
     // the target period, so every satellite can be phased against it independently
@@ -57,11 +57,17 @@ namespace RelayOrbiter.Core
         public int[]    Attempts    { get; set; } = new int[0];
         public int      Current     { get; set; } = -1;   // member being switched to or burning
         public int      BurnsDone   { get; set; }
+        public bool     MatchPlanes { get; set; }             // rotate every orbit into one plane first
+        public double   PlaneInclination { get; set; }        // that plane (degrees)
+        public double   PlaneLan    { get; set; }
+
+        public OrbitPlane Plane => new OrbitPlane(PlaneInclination, PlaneLan);
 
         // Burns member i may still need from its stage (an upper bound: stages it
         // turns out not to need are skipped).
         public int BurnsLeft(int i) => Stage[i] switch
         {
+            CorrectionStage.Plane       => 6,
             CorrectionStage.Transfer    => 5,
             CorrectionStage.Circularize => 4,
             CorrectionStage.Phase       => 3,
@@ -80,10 +86,11 @@ namespace RelayOrbiter.Core
 
         public static MaintenanceState Start(IReadOnlyList<uint> members, SlotFit fit, double epochUT,
                                              double targetSma, double targetPeriod, int? reference,
-                                             int minOrbits, double minRadius, double maxRadius)
+                                             int minOrbits, double minRadius, double maxRadius,
+                                             OrbitPlane? plane = null)
         {
             int m = members.Count;
-            var stage = Enumerable.Repeat(CorrectionStage.Transfer, m).ToArray();
+            var stage = Enumerable.Repeat(plane != null ? CorrectionStage.Plane : CorrectionStage.Transfer, m).ToArray();
             if (reference.HasValue) stage[reference.Value] = CorrectionStage.Done;
             return new MaintenanceState
             {
@@ -102,6 +109,9 @@ namespace RelayOrbiter.Core
                 PhaseUT      = Enumerable.Repeat(double.NaN, m).ToArray(),
                 PhaseOrbits  = new int[m],
                 Attempts     = new int[m],
+                MatchPlanes  = plane != null,
+                PlaneInclination = plane?.InclinationDeg ?? 0.0,
+                PlaneLan     = plane?.LanDeg ?? 0.0,
             };
         }
 
@@ -145,6 +155,9 @@ namespace RelayOrbiter.Core
             ["Attempts"]     = string.Join(",", Attempts.Select(x => x.ToString(Inv))),
             ["Current"]      = Current.ToString(Inv),
             ["BurnsDone"]    = BurnsDone.ToString(Inv),
+            ["MatchPlanes"]  = MatchPlanes.ToString(Inv),
+            ["PlaneInclination"] = Num(PlaneInclination),
+            ["PlaneLan"]     = Num(PlaneLan),
         };
 
         public static MaintenanceState FromValues(IReadOnlyDictionary<string, string> values)
@@ -172,6 +185,9 @@ namespace RelayOrbiter.Core
                 Attempts     = List("Attempts").Select(x => int.Parse(x, Inv)).ToArray(),
                 Current      = int.Parse(Get("Current"), Inv),
                 BurnsDone    = values.TryGetValue("BurnsDone", out var b) ? int.Parse(b, Inv) : 0,
+                MatchPlanes  = values.TryGetValue("MatchPlanes", out var mp) && bool.Parse(mp),
+                PlaneInclination = values.TryGetValue("PlaneInclination", out var pi) ? Parse(pi) : 0.0,
+                PlaneLan     = values.TryGetValue("PlaneLan", out var pl) ? Parse(pl) : 0.0,
             };
             int m = state.Members.Length;
             if (new[] { state.SlotOf.Length, state.Stage.Length, state.PhaseUT.Length,

@@ -155,4 +155,27 @@ public class MaintenanceStateTests
         s.BurnsDone = 7;
         Assert.Equal(7, MaintenanceState.FromValues(new Dictionary<string, string>(s.ToValues())).BurnsDone);
     }
+
+    [Fact]
+    public void MatchingPlanesStartsWithThePlaneStage()
+    {
+        var fit = StationKeeping.Fit(new[] { 0.0, 120.0, 240.0 }, 3);
+        var s = MaintenanceState.Start(new uint[] { 1, 2, 3 }, fit, 0.0, 2e6, 6e4, 0, 1, 2e5, 3e6, new OrbitPlane(1.5, 30));
+        Assert.Equal(CorrectionStage.Done, s.Stage[0]);         // the reference
+        Assert.Equal(CorrectionStage.Plane, s.Stage[1]);
+        s.Advance(1, true);
+        Assert.Equal(CorrectionStage.Transfer, s.Stage[1]);
+        var r = MaintenanceState.FromValues(new Dictionary<string, string>(s.ToValues()));
+        Assert.True(r.MatchPlanes);
+        Assert.Equal(1.5, r.PlaneInclination);
+        Assert.Equal(30.0, r.PlaneLan);
+    }
+
+    [Fact]
+    public void StatesSavedBeforePlaneMatchingStillLoad()
+    {
+        var v = new Dictionary<string, string>(Sample().ToValues());
+        v.Remove("MatchPlanes"); v.Remove("PlaneInclination"); v.Remove("PlaneLan");
+        Assert.False(MaintenanceState.FromValues(v).MatchPlanes);
+    }
 }
