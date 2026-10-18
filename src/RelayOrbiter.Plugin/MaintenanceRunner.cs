@@ -186,13 +186,12 @@ namespace RelayOrbiter.Plugin
                 var solver = vessel.patchedConicSolver;
                 if (solver == null) { Fail("Maneuver nodes are not available."); return; }
                 foreach (var n in solver.maneuverNodes.ToList()) n.RemoveSelf();
-                VesselParts.ActivateEngines(vessel);
                 var burn = Plan(i, vessel.orbit, now, commit: true);
                 if (State != RunState.Running) return;
                 if (burn == null) { AdvanceStage(i, now); _state.Current = -1; return; }
                 var node = solver.AddManeuverNode(burn.UT);
                 node.OnGizmoUpdated(new Vector3d(0.0, burn.Normal, burn.Dv), burn.UT);  // x radial, y normal, z prograde
-                if (burn.Normal != 0.0) CheckPlaneChangeSign(solver, node, burn);
+                if (burn.Normal != 0.0) CheckPlaneChangeSign(i, solver, node, burn);
                 Log($"{vessel.vesselName}: {burn.Log}");
                 _executor = new NodeExecutor(vessel, _formatTime, maneuverModeRequired: burn.Normal != 0.0, precise: true);
             }
@@ -238,30 +237,60 @@ namespace RelayOrbiter.Plugin
         // the phasing orbit and logs skips).
         private Burn? Plan(int i, Orbit o, double now, bool commit)
         {
-            double mu = o.referenceBody.gravParameter, a = _state.TargetSma;
+            double mu = o.referenceBody.gravParameter;
+            double a = TargetSma(i);                     // the slot's semi-major axis
+            bool elliptical = _state.TargetElliptical(i);
+            // Circular slots: their radius. Elliptical: first circular at the slot's periapsis.
+            double rCircular = elliptical ? a * (1.0 - _state.TargetEcc[i]) : a;
+            bool shapeOk = elliptical && EllipseOk(i, o);
             switch (_state.Stage[i])
             {
                 case CorrectionStage.Plane:
+                case CorrectionStage.PlaneLate:
                 {
                     if (!_state.MatchPlanes) return Skip(commit, "planes not matched.");
-                    var n2 = TargetNormal(o, now);
-                    var n1 = Normal(o, now);
+                    // Raising the orbit: change the plane once up there, where it's cheaper.
+                    if (_state.Stage[i] == CorrectionStage.Plane && !shapeOk &&
+                        StationKeeping.NeedsTransfer(o.ApR, o.PeR, rCircular) && rCircular > o.semiMajorAxis)
+                        return Skip(commit, "the plane changes after the transfer up, where it's cheaper.");
+                    var plane = _state.TargetPlane(i);
+                    var n2 = PlaneMatch.TargetNormal(plane, o, now);
+                    var n1 = PlaneMatch.Normal(o, now);
                     double angle = Vector3d.Angle(n1, n2);
-                    if (angle < PlaneToleranceDeg) return Skip(commit, $"{angle:F3}° from the common plane, no plane change.");
-                    double ut = NextPlaneCrossing(o, n2, now + MinNodeLead);
+                    if (angle < PlaneToleranceDeg) return Skip(commit, $"{angle:F3}° from its plane, no plane change.");
+                    double ut = PlaneMatch.NextCrossing(o, n2, now + MinNodeLead);
                     double speed = o.getOrbitalVelocityAtUT(ut).magnitude;
-                    double rad = angle * Math.PI / 180.0;
-                    double prograde = speed * (Math.Cos(rad) - 1.0), normal = speed * Math.Sin(rad);
+                    var (prograde, normal) = PlaneMatch.DeltaV(speed, angle);
                     if (PlaneGrouping.PlaneChangeDv(speed, angle) < MinBurn)
-                        return Skip(commit, $"{angle:F3}° from the common plane: too small to fly.");
-                    return new Burn(ut, prograde, $"plane change, {angle:F2}° into the common plane " +
-                                    $"(i {_state.PlaneInclination:F2}°, Ω {_state.PlaneLan:F2}°): " +
+                        return Skip(commit, $"{angle:F3}° from its plane: too small to fly.");
+                    return new Burn(ut, prograde, $"plane change, {angle:F2}° into its plane " +
+                                    $"(i {plane.InclinationDeg:F2}°, Ω {plane.LanDeg:F2}°): " +
                                     $"{PlaneGrouping.PlaneChangeDv(speed, angle):F3} m/s.", normal);
                 }
                 case CorrectionStage.Transfer:
                 {
-                    if (!StationKeeping.NeedsTransfer(o.ApR, o.PeR, a)) return Skip(commit, "close to the target orbit, no transfer.");
-                    var t = _transfer.Plan(mu, o.ApR, o.PeR, a);
+                    if (shapeOk || !StationKeeping.NeedsTransfer(o.ApR, o.PeR, rCircular))
+                        return Skip(commit, "close to the target orbit, no transfer.");
+                    var t = _transfer.Plan(mu, o.ApR, o.PeR, rCircular);
+                    if (_state.Shaped && !elliptical && o.eccentricity < 0.05)
+                    {
+                        // Arrive at the slot itself (a rendezvous with it): no phasing left to
+                        // do, and Trojans don't meet their moon on the way.
+                        double half = Math.PI * Math.Sqrt(Math.Pow(t.TransferSma, 3) / mu);
+                        double needed = StationKeeping.Mod360(180.0 - 360.0 * half / _state.TargetPeriod);
+                        double ahead = StationKeeping.Mod360(SlotLongitude(i, now) - MeanLongitude.At(o, now));
+                        double wait = MoonTransferPlanner.WaitTime(ahead, needed, o.period, _state.TargetPeriod);
+                        if (!double.IsInfinity(wait))
+                        {
+                            double synodic = MoonTransferPlanner.SynodicPeriod(o.period, _state.TargetPeriod);
+                            double when = now + wait;
+                            while (when < now + MinNodeLead) when += synodic;
+                            return Make(commit, when, _phasing.TrimDv(mu, o.getRelativePositionAtUT(when).magnitude,
+                                                                      o.semiMajorAxis, t.TransferSma),
+                                        $"transfer burn timed to arrive at its slot (slot {ahead:F0}° ahead, needs " +
+                                        $"{needed:F0}°), in {_formatTime(when - now)}.");
+                        }
+                    }
                     double ut = _planner.NextPassUT(now, t.FirstBurnAt == Apsis.Periapsis ? o.timeToPe : o.timeToAp,
                                                     o.period, MinNodeLead);
                     return Make(commit, ut, t.FirstDv,
@@ -269,15 +298,29 @@ namespace RelayOrbiter.Plugin
                 }
                 case CorrectionStage.Circularize:
                 {
-                    if (!StationKeeping.NeedsTransfer(o.ApR, o.PeR, a)) return Skip(commit, "close to the target orbit, no circularization.");
-                    bool atAp = Math.Abs(o.ApR - a) <= Math.Abs(o.PeR - a);
+                    if (shapeOk || !StationKeeping.NeedsTransfer(o.ApR, o.PeR, rCircular))
+                        return Skip(commit, "close to the target orbit, no circularization.");
+                    bool atAp = Math.Abs(o.ApR - rCircular) <= Math.Abs(o.PeR - rCircular);
                     double ut = _planner.NextPassUT(now, atAp ? o.timeToAp : o.timeToPe, o.period, MinNodeLead);
                     double dv = _planner.CircularizeAt(mu, atAp ? o.ApR : o.PeR, o.semiMajorAxis);
                     return Make(commit, ut, dv, $"circularize, {dv:F2} m/s at {(atAp ? "apoapsis" : "periapsis")}.");
                 }
+                case CorrectionStage.Apsis:
+                {
+                    if (!elliptical) return Skip(commit, "circular slot, no apsis to raise.");
+                    if (shapeOk) return Skip(commit, "already on its elliptical orbit.");
+                    // Where the slot's periapsis is: burn prograde there up to the slot's size.
+                    var pe = PeriapsisDirection(i, o, now);
+                    double ut = PlaneMatch.NextAlignment(o, pe, now + MinNodeLead);
+                    double r = o.getRelativePositionAtUT(ut).magnitude;
+                    double dv = _phasing.TrimDv(mu, r, o.semiMajorAxis, a);
+                    return Make(commit, ut, dv, $"raise the apoapsis to {(2 * a - r - o.referenceBody.Radius) / 1000.0:F0} km " +
+                                                $"(periapsis at ω {_state.TargetArgPe[i]:F0}°): {dv:F2} m/s.");
+                }
                 case CorrectionStage.Phase:
                 {
-                    double ut = now + NodeLead;
+                    // Elliptical: at the periapsis, so it stays where it is.
+                    double ut = elliptical ? NextPeriapsis(o, now) : now + NodeLead;
                     double error = ErrorAt(i, o, ut);
                     if (StationKeeping.PhaseOk(error)) return Skip(commit, $"{error:+0.00;-0.00}° from its slot, no phasing.");
                     double r = o.getRelativePositionAtUT(ut).magnitude;
@@ -319,7 +362,7 @@ namespace RelayOrbiter.Plugin
                 {
                     if (StationKeeping.PeriodOk(o.period, _state.TargetPeriod))
                         return Skip(commit, $"period within {StationKeeping.PeriodToleranceRel:P2} of the target, no trim.");
-                    double ut = now + NodeLead;
+                    double ut = elliptical ? NextPeriapsis(o, now) : now + NodeLead;
                     double dv = _phasing.TrimDv(mu, o.getRelativePositionAtUT(ut).magnitude, o.semiMajorAxis, a);
                     return Make(commit, ut, dv,
                                 $"period trim, {o.period - _state.TargetPeriod:+0.0;-0.0} s off, {dv:F3} m/s.");
@@ -344,67 +387,9 @@ namespace RelayOrbiter.Plugin
         // ── Helpers ──────────────────────────────────────────────────────────
 
         // ── Planes ───────────────────────────────────────────────────────────
-        // Normals are taken in the Orbit class's own frame (position × velocity), for
-        // the satellites and for the common plane alike, so only angles and signs of
-        // dot products are used: they don't depend on how that frame is oriented.
 
-        private static Vector3d Normal(Orbit o, double ut) =>
-            Vector3d.Cross(o.getRelativePositionAtUT(ut), o.getOrbitalVelocityAtUT(ut)).normalized;
-
-        // The common plane's normal: from a circular orbit in that plane.
-        private Vector3d TargetNormal(Orbit o, double ut)
-        {
-            var plane = new Orbit(_state.PlaneInclination, 0.0, o.semiMajorAxis, _state.PlaneLan, 0.0, 0.0, ut,
-                                  o.referenceBody);
-            return Normal(plane, ut);
-        }
-
-        // Next time after `from` the satellite crosses the common plane (the line of
-        // nodes between the two planes): where position · normal changes sign.
-        private static double NextPlaneCrossing(Orbit o, Vector3d n2, double from)
-        {
-            const int steps = 90;
-            double F(double t) => Vector3d.Dot(o.getRelativePositionAtUT(t), n2);
-            double dt = o.period / steps, t0 = from, f0 = F(t0);
-            for (int k = 1; k <= steps; ++k)
-            {
-                double t1 = from + k * dt, f1 = F(t1);
-                if (Math.Sign(f1) != Math.Sign(f0))
-                {
-                    for (int j = 0; j < 50; ++j)
-                    {
-                        double tm = (t0 + t1) / 2.0, fm = F(tm);
-                        if (Math.Sign(fm) == Math.Sign(f0)) { t0 = tm; f0 = fm; } else t1 = tm;
-                    }
-                    return (t0 + t1) / 2.0;
-                }
-                t0 = t1; f0 = f1;
-            }
-            return from;  // already in the plane: any time will do
-        }
-
-        // The normal component's sign depends on which node this is: check the orbit
-        // KSP predicts after the node, and flip the burn when it tilts the wrong way.
-        private void CheckPlaneChangeSign(PatchedConicSolver solver, ManeuverNode node, Burn burn)
-        {
-            double Off()
-            {
-                solver.UpdateFlightPlan();
-                var next = node.nextPatch;
-                return next == null ? double.NaN
-                    : PlaneGrouping.RelativeInclinationDeg(new OrbitPlane(next.inclination, next.LAN), _state.Plane);
-            }
-            double plus = Off();
-            node.OnGizmoUpdated(new Vector3d(0.0, -burn.Normal, burn.Dv), burn.UT);
-            double minus = Off();
-            if (double.IsNaN(minus) || plus <= minus)
-            {
-                node.OnGizmoUpdated(new Vector3d(0.0, burn.Normal, burn.Dv), burn.UT);
-                solver.UpdateFlightPlan();
-            }
-            Log($"Plane change: {Math.Min(plus, double.IsNaN(minus) ? plus : minus):F3}° from the common plane " +
-                $"after the node (normal +: {plus:F3}°, −: {minus:F3}°).");
-        }
+        private void CheckPlaneChangeSign(int i, PatchedConicSolver solver, ManeuverNode node, Burn burn) =>
+            PlaneMatch.CheckSign(solver, node, burn.UT, burn.Dv, burn.Normal, _state.TargetPlane(i), Log);
 
         // Too close to another satellite's phasing return to fly both.
         private bool ReturnClashes(int i, double ut)
@@ -428,8 +413,63 @@ namespace RelayOrbiter.Plugin
 
         private string Name(int i) => Member(i)?.vesselName ?? $"satellite {_state.Members[i]}";
 
-        private double ErrorAt(int i, Orbit o, double ut) =>
-            _state.Frame.ErrorDeg(MeanLongitude.At(o, ut), _state.SlotOf[i], ut);
+        // How far satellite i (on orbit o) is ahead of its slot at ut. A ring compares
+        // mean longitudes; a shape, mean arguments of latitude in each satellite's plane
+        // (Trojans against their moon's).
+        private double ErrorAt(int i, Orbit o, double ut)
+        {
+            if (!_state.Shaped) return _state.Frame.ErrorDeg(MeanLongitude.At(o, ut), _state.SlotOf[i], ut);
+            double anchor = double.NaN;
+            if (_state.AnchorBody != null)
+            {
+                var moon = FlightGlobals.Bodies.FirstOrDefault(b => b.bodyName == _state.AnchorBody);
+                if (moon != null) anchor = MeanLongitude.ArgLat(moon.orbit, ut);
+            }
+            return StationKeeping.Wrap180(MeanLongitude.ArgLat(o, ut) - _state.SlotPhaseDeg(i, ut, anchor));
+        }
+
+        // The slot's mean longitude (its node plus its phase): comparable with the
+        // satellite's when both are close to the same plane.
+        private double SlotLongitude(int i, double ut)
+        {
+            double anchor = double.NaN;
+            if (_state.AnchorBody != null)
+            {
+                var moon = FlightGlobals.Bodies.FirstOrDefault(b => b.bodyName == _state.AnchorBody);
+                if (moon != null) anchor = MeanLongitude.ArgLat(moon.orbit, ut);
+            }
+            return StationKeeping.Mod360(_state.TargetLan[i] + _state.SlotPhaseDeg(i, ut, anchor));
+        }
+
+        private double TargetSma(int i) => _state.Shaped ? _state.TargetSmas[i] : _state.TargetSma;
+
+        // Already on the slot's ellipse: apsides within 1 %, periapsis within 3° of its place.
+        private bool EllipseOk(int i, Orbit o)
+        {
+            double a = _state.TargetSmas[i], e = _state.TargetEcc[i];
+            double rp = a * (1.0 - e), ra = a * (1.0 + e);
+            if (Math.Abs(o.PeR - rp) > 0.01 * rp || Math.Abs(o.ApR - ra) > 0.01 * ra) return false;
+            var pe = PeriapsisDirection(i, o, Planetarium.GetUniversalTime());
+            var mine = o.getRelativePositionAtUT(Planetarium.GetUniversalTime() + o.timeToPe);
+            return Vector3d.Angle(pe, mine) < 3.0;
+        }
+
+        // Direction (in the Orbit frame) of the slot's periapsis: from an orbit with the
+        // slot's elements whose mean anomaly is 0 at ut.
+        private Vector3d PeriapsisDirection(int i, Orbit o, double ut)
+        {
+            var plane = _state.TargetPlane(i);
+            var slot = new Orbit(plane.InclinationDeg, _state.TargetEcc[i], _state.TargetSmas[i], plane.LanDeg,
+                                 _state.TargetArgPe[i], 0.0, ut, o.referenceBody);
+            return slot.getRelativePositionAtUT(ut).normalized;
+        }
+
+        private static double NextPeriapsis(Orbit o, double now)
+        {
+            double ut = now + o.timeToPe;
+            while (ut < now + MinNodeLead) ut += o.period;
+            return ut;
+        }
 
         private double SlotError(int i, double ut)
         {
@@ -460,7 +500,9 @@ namespace RelayOrbiter.Plugin
 
         private static string Describe(CorrectionStage s) => s switch
         {
-            CorrectionStage.Plane       => "plane change into the common plane",
+            CorrectionStage.Plane       => "plane change into its plane",
+            CorrectionStage.PlaneLate   => "plane change into its plane (after raising)",
+            CorrectionStage.Apsis       => "raise the apoapsis (elliptical slot)",
             CorrectionStage.Transfer    => "transfer towards the target orbit",
             CorrectionStage.Circularize => "circularize at the target orbit",
             CorrectionStage.Phase       => "phasing burn",
@@ -477,5 +519,9 @@ namespace RelayOrbiter.Plugin
         // Ω + ω + M in degrees: advances uniformly, so slots and drift are linear in it.
         public static double At(Orbit o, double ut) =>
             StationKeeping.Mod360(o.LAN + o.argumentOfPeriapsis + 360.0 * o.getObtAtUT(ut) / o.period);
+
+        // ω + M: the mean argument of latitude, measured in the orbit's own plane from its node.
+        public static double ArgLat(Orbit o, double ut) =>
+            StationKeeping.Mod360(o.argumentOfPeriapsis + 360.0 * o.getObtAtUT(ut) / o.period);
     }
 }

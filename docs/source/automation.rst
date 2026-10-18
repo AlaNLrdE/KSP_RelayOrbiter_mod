@@ -54,12 +54,16 @@ Every burn is flown by the same executor:
 
 - It warps to 60 s before the burn's start (half its duration before the node), points
   with SAS (maneuver mode, or prograde/retrograde for the purely tangential burns) and
-  starts on time.
+  starts on time. Once it points along the burn and has stopped turning, it warps on
+  until 10 s before ignition.
 - Full throttle, easing off over the last second of thrust; no thrust while pointing
   more than 5° off.
 - The remaining delta-v is measured along the burn's initial direction, and for the last
   1.5 s of thrust SAS holds attitude instead of chasing the node, whose direction swings
   as it shrinks. It cuts off at 0.05 m/s, or on overshoot.
+- **Engines:** when no engine is running before a burn, it activates the engines of the
+  current stage that are off (a lone satellite: the next stage's), never a satellite's
+  still on board. This is a setting, on by default, in Automation and Maintenance.
 - **Staging:** when a carrier's engine runs dry, it stages away the spent stage (up to
   4 times per burn), never a stage that would release a satellite still on board.
 - It gives up after 60 s without pointing, after 30 s without SAS (reporting the control

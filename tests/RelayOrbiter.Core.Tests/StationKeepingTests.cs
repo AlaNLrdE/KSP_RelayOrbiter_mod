@@ -82,6 +82,23 @@ public class StationKeepingTests
     }
 
     [Fact]
+    public void FreeNamesAllowBigConstellations()
+    {
+        var names = Enumerable.Range(1, 30).Select(k => $"Relay {k}").ToList();
+        Assert.Equal(30, ConstellationGroup.Suggest("Relay 1", names)!.Count);
+        var many = Enumerable.Range(1, 50).Select(k => $"Relay {k}").ToList();
+        Assert.Equal(StationKeeping.MaxSlots, ConstellationGroup.Suggest("Relay 1", many)!.Count);
+    }
+
+    [Fact]
+    public void FitsThirtySixSlots()
+    {
+        var lon = Enumerable.Range(0, 36).Select(k => k * 10.0 + 0.3).ToList();
+        var fit = StationKeeping.Fit(lon, 36);
+        Assert.All(fit.ErrorsDeg, e => Assert.True(Math.Abs(e) < 1e-9));
+    }
+
+    [Fact]
     public void NoSuggestionForAnUnnumberedOrLonelyVessel()
     {
         Assert.Null(ConstellationGroup.Suggest("Mun Lander", new[] { "Kerbin Sat 1" }));

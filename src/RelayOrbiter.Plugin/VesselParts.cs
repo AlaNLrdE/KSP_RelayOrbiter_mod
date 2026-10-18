@@ -176,12 +176,6 @@ namespace RelayOrbiter.Plugin
         private static bool IsFuel(PartResource r) =>
             r.resourceName != "ElectricCharge" && r.info.resourceTransferMode != ResourceTransferMode.NONE;
 
-        public static void ActivateEngines(Vessel vessel)
-        {
-            foreach (var e in vessel.FindPartModulesImplementing<ModuleEngines>())
-                if (e.isEnabled && !e.EngineIgnited) e.Activate();
-        }
-
         // Thrust (kN, vacuum) and thrust-weighted Isp (s) of the vessel's running engines.
         public static (double thrust, double isp) ActiveEngines(Vessel vessel)
         {

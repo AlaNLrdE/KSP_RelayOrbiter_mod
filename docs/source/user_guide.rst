@@ -5,8 +5,12 @@ Open the window with the Relay Orbiter toolbar button in flight. It closes with 
 **×** in its corner or the toolbar button, and hides with the rest of the interface
 (**F2**). Clicks and keystrokes over the window don't reach the game.
 
-The window always plans for the body the **active vessel orbits**, and follows it when the
-vessel changes sphere of influence.
+The window plans for the body the **active vessel orbits**, and follows it when the
+vessel changes sphere of influence. **Deploy around** picks another destination to
+travel to first (see :doc:`travel`).
+
+The window fits its content: it grows and shrinks with it. When the content would run
+off the screen it scrolls instead, and the window always stays on screen.
 
 Header: satellites and target altitude
 --------------------------------------

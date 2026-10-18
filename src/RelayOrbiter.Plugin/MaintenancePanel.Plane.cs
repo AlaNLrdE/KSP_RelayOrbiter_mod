@@ -14,6 +14,7 @@ namespace RelayOrbiter.Plugin
     internal sealed partial class MaintenancePanel
     {
         private bool _byPlane;
+        private Vector2 _namesScroll;
         private string _toleranceText = PlaneGrouping.DefaultToleranceDeg.ToString("F0", CultureInfo.InvariantCulture);
         private double _planeTolerance = double.NaN;     // tolerance the selection was made with
         private uint _planeFor;                          // active vessel the selection was made for
@@ -42,6 +43,7 @@ namespace RelayOrbiter.Plugin
                 SuggestPlane(vessel, candidates, planes, seed, tolerance);
 
             GUILayout.Label("Tick the members   plane difference · altitude", _header);
+            BeginList(candidates.Count, ref _planeScroll);
             foreach (var v in candidates)
             {
                 int i = candidates.IndexOf(v);
@@ -54,18 +56,21 @@ namespace RelayOrbiter.Plugin
                     if (on) _planeSelected.Add(v.persistentId); else _planeSelected.Remove(v.persistentId);
                 }
             }
+            EndList(candidates.Count);
 
             var members = candidates.Where(v => _planeSelected.Contains(v.persistentId)).ToList();
             if (!members.Contains(vessel)) { Warn("Tick the active vessel too: the names start from it."); return; }
-            if (members.Count < Resonance.MinSatellites) { Warn("Tick at least two satellites."); return; }
-            if (members.Count > Resonance.MaxSatellites) { Warn($"At most {Resonance.MaxSatellites} satellites."); return; }
+            if (members.Count < StationKeeping.MinSlots) { Warn("Tick at least two satellites."); return; }
+            if (members.Count > StationKeeping.MaxSlots) { Warn($"At most {StationKeeping.MaxSlots} satellites."); return; }
 
             var names = NewNames(body, vessel, members);
             GUILayout.Label("New names", _header);
+            BeginList(members.Count, ref _namesScroll);
             for (int i = 0; i < members.Count; ++i)
                 GUILayout.Label(members[i].vesselName == names[i]
                     ? $"  {names[i]} (unchanged)"
                     : $"  {Short(members[i].vesselName)} → {names[i]}");
+            EndList(members.Count);
             double spread = members.Max(a => members.Max(b =>
                 PlaneGrouping.RelativeInclinationDeg(new OrbitPlane(a.orbit.inclination, a.orbit.LAN),
                                                      new OrbitPlane(b.orbit.inclination, b.orbit.LAN))));

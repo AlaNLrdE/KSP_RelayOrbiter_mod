@@ -31,8 +31,16 @@ namespace RelayOrbiter.Plugin
         private Body?   _body;  // the body the active vessel orbits
         private AltitudeSource _source = AltitudeSource.Synchronous;
         private int     _child, _midA, _midB = 1;
+        private int     _deployAt;  // 0: around the body orbited, k: around its k-th moon
         private string  _customKm = "1000";
         private int     _tab;  // 0 = results, 1 = maneuvers, 2 = automation, 3 = maintenance
+        private Vector2 _scroll;
+        private float   _contentHeight = 300f;     // height of the tab content (last repaint)
+        private float   _bodyTop = 200f;           // y of the tab content inside the window (last repaint)
+        private const float MinBodyHeight = 200f;  // the content may always use this much
+        private const float BottomMargin  = 20f;   // px kept free below the window
+        private const float WindowPadding = 20f;   // the skin's window padding, left and right
+        private const float ScrollBarWidth = 16f;  // the skin's vertical scroll bar and its margin
 
         private GUIStyle? _ok, _warn, _header;
 
@@ -75,7 +83,15 @@ namespace RelayOrbiter.Plugin
         public void Draw()
         {
             if (_ok == null) CreateStyles();
+            // GUILayout.Window only ever grows the rect: start from no height on each Layout
+            // pass, so it fits the content and shrinks again when the content does. Only
+            // then: the other passes (scroll wheel, drag, repaint) draw with the rect they
+            // are given, and a zero height would hide the window until the next Layout.
+            if (Event.current.type == EventType.Layout) _rect.height = 0f;
             _rect = GUILayout.Window(WindowId, _rect, DrawContents, "Relay Orbiter", GUILayout.Width(Width));
+            // Keep it on screen.
+            _rect.x = Mathf.Clamp(_rect.x, 0f, Mathf.Max(0f, Screen.width - _rect.width));
+            _rect.y = Mathf.Clamp(_rect.y, 0f, Mathf.Max(0f, Screen.height - MinBodyHeight - 60f));
         }
 
         // ── Layout ────────────────────────────────────────────────────────────
@@ -90,16 +106,18 @@ namespace RelayOrbiter.Plugin
                 GUI.DragWindow();
                 return;
             }
-            var body = _body!;
+            var current = _body!;
 
             if (_automation.IsRunning || _automation.IsLaunching || _automation.HasPending) _tab = 2;
             if (_maintenance.IsRunning || _maintenance.HasPending) _tab = 3;
 
             // The satellite count and target altitude are for a new deployment.
             AltitudeOption? option = null;
+            var body = current;  // where the constellation goes
             if (_tab != 3)
             {
                 DrawSatelliteCount();
+                body = DrawDestination(current);
                 option = DrawAltitudeSelector(body);
                 GUILayout.Space(6f);
             }
@@ -108,12 +126,26 @@ namespace RelayOrbiter.Plugin
             if (_automation.IsRunning || _automation.IsLaunching || _automation.HasPending) _tab = 2;
             if (_maintenance.IsRunning || _maintenance.HasPending) _tab = 3;
 
+            // The tab's content scrolls once it would run off the bottom of the screen.
+            if (Event.current.type == EventType.Repaint) _bodyTop = GUILayoutUtility.GetLastRect().yMax;
+            float maxHeight = Mathf.Max(MinBodyHeight, Screen.height - _rect.y - _bodyTop - BottomMargin);
+            // An explicit height (the content's, measured last frame, capped): a scroll view
+            // left to auto-layout inside an auto-sized window collapses or never shrinks.
+            float height = Mathf.Min(_contentHeight + 4f, maxHeight);
+            _scroll = GUILayout.BeginScrollView(_scroll, false, false, GUIStyle.none, GUI.skin.verticalScrollbar,
+                                                GUILayout.Height(height));
+            // As wide as the view (less the scroll bar), so long lines wrap instead of
+            // running off the right edge.
+            GUILayout.BeginVertical(GUILayout.Width(Width - WindowPadding - ScrollBarWidth));
             if (_tab == 3)
-                _maintenance.Draw(body);
+                _maintenance.Draw(current);
+            else if (_tab == 1 && body != current)
+                GUILayout.Label($"The Maneuvers tab plans around {current.Name}, the body you orbit. " +
+                                $"Use Automation to travel to {body.Name} and deploy there.", _warn);
             else if (_tab == 1)
                 _maneuvers.Draw(body, option != null && option.IsValid ? option.Altitude : (double?)null);
             else if (_tab == 2)
-                _automation.Draw(body, option != null && option.IsValid ? option.Altitude : (double?)null,
+                _automation.Draw(current, body, RouteTo(current, body), option != null && option.IsValid ? option.Altitude : (double?)null,
                                  option == null ? "Enter a valid target altitude."
                                  : option.IsValid ? null : StatusText(body, option));
             else if (option == null) { }
@@ -124,6 +156,9 @@ namespace RelayOrbiter.Plugin
                 var parking = _calculator.Recommend(body, option.Altitude, n);
                 DrawResult(body, _calculator.Calculate(body, option.Altitude, n, parking));
             }
+            GUILayout.EndVertical();
+            if (Event.current.type == EventType.Repaint) _contentHeight = GUILayoutUtility.GetLastRect().height;
+            GUILayout.EndScrollView();
 
             GUI.DragWindow();
         }
@@ -151,14 +186,60 @@ namespace RelayOrbiter.Plugin
             if (_body == null || _body.Name != name)
             {
                 _body = _db.Find(name);
-                _child = 0; _midA = 0; _midB = 1;
+                _child = 0; _midA = 0; _midB = 1; _deployAt = 0;
             }
             return _body != null;
         }
 
+        // Deploy around the body orbited, or travel first: to one of its moons, a sibling
+        // (another planet around the same star, another moon of the same planet) or a
+        // sibling's moon. ◀ ▶ cycle through them.
+        private Body DrawDestination(Body current)
+        {
+            var options = Destinations(current);
+            _deployAt = Mathf.Clamp(_deployAt, 0, options.Count - 1);
+            if (options.Count > 1 && !_automation.IsRunning && !_automation.IsLaunching)
+            {
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("Deploy around", _header, GUILayout.Width(110f));
+                if (GUILayout.Button("◀", GUILayout.Width(28f))) _deployAt = (_deployAt + options.Count - 1) % options.Count;
+                var d = options[_deployAt];
+                GUILayout.Label($"{d.Name}  ({RouteLabel(current, d)})", GUILayout.ExpandWidth(true));
+                if (GUILayout.Button("▶", GUILayout.Width(28f))) _deployAt = (_deployAt + 1) % options.Count;
+                GUILayout.EndHorizontal();
+            }
+            return options[_deployAt];
+        }
+
+        // The body orbited, its moons, then each sibling followed by its moons.
+        private List<Body> Destinations(Body current)
+        {
+            var list = new List<Body> { current };
+            list.AddRange(_db.ChildrenOf(current.Name));
+            if (current.Parent != null)
+                foreach (var sibling in _db.ChildrenOf(current.Parent).Where(b => b.Name != current.Name))
+                {
+                    list.Add(sibling);
+                    list.AddRange(_db.ChildrenOf(sibling.Name));
+                }
+            return list;
+        }
+
+        public TransferRoute RouteTo(Body current, Body destination) =>
+            Routes.Find(current.Name, destination.Name, n => _db.Find(n)?.Parent);
+
+        private string RouteLabel(Body current, Body d) => RouteTo(current, d) switch
+        {
+            TransferRoute.None         => "here",
+            TransferRoute.Moon         => "moon, direct transfer",
+            TransferRoute.Sibling      => current.Parent == null ? "transfer" : $"transfer around {current.Parent}",
+            TransferRoute.SiblingsMoon => $"moon of {d.Parent}, via {d.Parent}",
+            _                          => "not reachable",
+        };
+
         private AltitudeOption? DrawAltitudeSelector(Body body)
         {
-            GUILayout.Label($"Orbiting {body.Name}{AtmHint(body)} — target altitude", _header);
+            GUILayout.Label($"{(body == _body ? "Orbiting" : "Around")} {body.Name}{AtmHint(body)} — target altitude", _header);
 
             var kids = _db.ChildrenOf(body.Name);
             var sources = new List<AltitudeSource> { AltitudeSource.Synchronous };

@@ -23,6 +23,9 @@ Full documentation: **<https://alanlrde.github.io/KSP_RelayOrbiter_mod/>**
   satellite, vessel switching and circularization burns, with time warp handled.
 - **Launch from the pad with MechJeb** (optional): MechJeb flies the ascent, Relay
   Orbiter takes over in orbit.
+- **Deploy at another body:** travel first to a moon, another planet or a planet's moon
+  (Mun, Duna, Ike...): window, ejection fine-tuned against KSP's prediction, course
+  corrections, capture. MechJeb's maneuver planner can be used instead.
 - **Safe by design:** checks the plan before starting (satellites, SAS, engines,
   fuel and delta-v of the carrier alone, safe periapsis, SOI), never stages away a
   satellite, tops up the satellites' tanks before each release, orients the carrier
@@ -33,6 +36,9 @@ Full documentation: **<https://alanlrde.github.io/KSP_RelayOrbiter_mod/>**
 - **CommNet check:** warns when the satellites won't see or reach each other.
 - **Constellation maintenance:** finds a constellation from the satellites' names and puts
   one satellite, or all of them in parallel, back in their slots with precise phasing burns.
+- **Constellation shapes:** Walker Delta and Star (one carrier per plane), Molniya,
+  Tundra, Draim's tetrahedron and Trojans of a moon, each satellite fitted to its slot
+  and moved there.
 - **Resume:** a deployment interrupted by a scene reload (or a quickload) can be resumed.
 - **RCS separation:** with RCS, the carrier pushes itself away from each released satellite.
 - **Works with planet packs:** bodies come from the running game (stock, Kopernicus,

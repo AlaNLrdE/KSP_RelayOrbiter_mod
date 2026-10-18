@@ -68,6 +68,18 @@ namespace RelayOrbiter.Plugin
             s.textField.padding = new RectOffset(5, 5, 3, 3);
 
             s.toggle.margin = new RectOffset(2, 2, 3, 3);
+            s.toggle.wordWrap = true;  // long member lines wrap instead of running under the scroll bar
+
+            // Scroll bars in the same flat style.
+            s.verticalScrollbar.normal.background      = Tex(Field, ControlEdge);
+            s.verticalScrollbar.border                 = new RectOffset(1, 1, 1, 1);
+            s.verticalScrollbar.fixedWidth             = 12f;
+            s.verticalScrollbarThumb.normal.background = Tex(Control, AccentEdge);
+            s.verticalScrollbarThumb.border            = new RectOffset(1, 1, 1, 1);
+            s.verticalScrollbarThumb.fixedWidth        = 12f;
+            s.horizontalScrollbar.normal.background      = Tex(Field, ControlEdge);
+            s.horizontalScrollbarThumb.normal.background = Tex(Control, AccentEdge);
+            s.scrollView.normal.background = null;
 
             Header = new GUIStyle(s.label) { fontStyle = FontStyle.Bold, normal = { textColor = Hex(0x8CC4FF) } };
             Ok     = new GUIStyle(s.label) { wordWrap = true, normal = { textColor = Hex(0x7FE08A) } };
