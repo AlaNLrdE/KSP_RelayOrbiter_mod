@@ -33,6 +33,32 @@ Tick or untick satellites to correct the suggestion, set the number of **Slots**
 start over. The list shows, for each member, its slot, how far it is off and its
 drift per orbit.
 
+Grouping relays by plane
+------------------------
+
+**Group by plane** gathers relays that were not deployed together (or have free
+names) into one constellation.
+
+1. It ticks every vessel orbiting the same body whose orbital plane is within the
+   **tolerance** of the active satellite's plane. The tolerance is 5° by default.
+
+   - It compares the angle between the planes, not just the inclinations: two orbits
+     inclined 10° with opposite nodes are 20° apart.
+   - A retrograde orbit never counts as the same plane.
+
+2. The list shows each vessel's plane difference and altitude. Tick or untick vessels
+   to adjust the group.
+3. The preview shows the new names in our scheme.
+
+   - The callsign is the members' own when they already share one, otherwise the
+     first free one around the body.
+   - The numbers follow the orbit from the active satellite. When the members already
+     have our names, the numbering starts from the one named 1/N.
+   - The tag carries the group's median altitude (or ``SYNC``) and mean inclination.
+4. **Rename them and form the constellation** renames them for good, the save file
+   included, and marks them as relays. It then switches back to **Group by name**
+   with the new constellation selected, ready to be corrected.
+
 Slots, reference and final altitude
 -----------------------------------
 
@@ -51,6 +77,16 @@ Slots, reference and final altitude
 - With a reference, the final altitude is the reference's.
 
 **Phasing orbits (at least)**: more phasing orbits take longer but need less Δv.
+
+**Match the orbital planes too** (on by default) rotates every orbit into one common
+plane before anything else. The common plane is the reference's, or the mean plane of
+the members.
+
+- Satellites in different planes keep their period, but they drift towards and away
+  from each other twice an orbit, so the spacing never holds everywhere.
+- Each plane change happens where the satellite's plane crosses the common plane.
+  It costs 2v·sin(θ/2) and leaves the period unchanged.
+- It needs SAS maneuver mode (level 3) on each satellite that turns.
 
 Correcting
 ----------
@@ -71,15 +107,16 @@ period.
 
 Each satellite goes through these stages, skipping the ones it doesn't need:
 
-1. **Transfer and circularize**, only when an apsis is more than 1 % off the
+1. **Plane change**, when matching planes and more than 0.05° off the common plane.
+2. **Transfer and circularize**, only when an apsis is more than 1 % off the
    final orbit.
-2. **Phasing**: one burn changes the period so that, after *k* orbits, the satellite
+3. **Phasing**: one burn changes the period so that, after *k* orbits, the satellite
    is back in its slot. A second burn at the same point sets the final period. The
    phasing orbit must stay out of the atmosphere and inside the SOI, so *k* grows
    when it would not. When that never works, the satellite goes the long way round.
    Two satellites' phasing returns are kept at least 30 minutes apart, so neither
    misses its pass.
-3. **Period trim**, when the period is still more than 0.01 % off.
+4. **Period trim**, when the period is still more than 0.01 % off.
 
 After the trim, a satellite still more than 0.5° off its slot (a missed pass, for
 instance) is phased once more.
