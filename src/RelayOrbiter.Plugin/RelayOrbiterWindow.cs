@@ -81,9 +81,11 @@ namespace RelayOrbiter.Plugin
         public void Draw()
         {
             if (_ok == null) CreateStyles();
-            // GUILayout.Window only ever grows the rect: start from no height every frame,
-            // so it fits the content and shrinks again when the content does.
-            _rect.height = 0f;
+            // GUILayout.Window only ever grows the rect: start from no height on each Layout
+            // pass, so it fits the content and shrinks again when the content does. Only
+            // then: the other passes (scroll wheel, drag, repaint) draw with the rect they
+            // are given, and a zero height would hide the window until the next Layout.
+            if (Event.current.type == EventType.Layout) _rect.height = 0f;
             _rect = GUILayout.Window(WindowId, _rect, DrawContents, "Relay Orbiter", GUILayout.Width(Width));
             // Keep it on screen.
             _rect.x = Mathf.Clamp(_rect.x, 0f, Mathf.Max(0f, Screen.width - _rect.width));
