@@ -37,6 +37,42 @@ public class PlaneGroupingTests
     }
 
     [Fact]
+    public void PolarOrbitsNeverJoinAnEquatorialGroup()
+    {
+        // The case seen in game: equatorial satellites and polar ones with the same node.
+        var planes = new[] { P(0.12, 102.45), P(0.09, 139.67), P(90.0, 102.34), P(89.99, 102.41), P(0.08, 199.4) };
+        Assert.Equal(new[] { 0, 1, 4 }, PlaneGrouping.SamePlane(planes, 0, 45.0));
+        Assert.Equal(new[] { 0, 1, 4 }, PlaneGrouping.SamePlane(planes, 0, 5.0));
+    }
+
+    [Fact]
+    public void MembersAreWithinTheToleranceOfEachOther()
+    {
+        // Both 45° from the equatorial seed, on opposite nodes: 90° from each other.
+        var planes = new[] { P(0, 0), P(45, 0), P(45, 180) };
+        var group = PlaneGrouping.SamePlane(planes, 0, 45.0);
+        Assert.Equal(2, group.Count);
+        Assert.True(PlaneGrouping.Spread(group.Select(i => planes[i]).ToList()) <= 45.0);
+    }
+
+    [Fact]
+    public void ClosestPlanesAreTakenFirst()
+    {
+        // 3° and 9° on opposite sides (12° apart), tolerance 10: the 3° one stays.
+        var planes = new[] { P(0, 0), P(9, 180), P(3, 0) };
+        Assert.Equal(new[] { 0, 2 }, PlaneGrouping.SamePlane(planes, 0, 10.0));
+    }
+
+    [Fact]
+    public void FitsChecksEveryMember()
+    {
+        var planes = new[] { P(0, 0), P(4, 0), P(4, 180) };
+        Assert.True(PlaneGrouping.Fits(planes, new[] { 0 }, 2, 5.0));
+        Assert.False(PlaneGrouping.Fits(planes, new[] { 0, 1 }, 2, 5.0));
+        Precision.Close(8.0, PlaneGrouping.Spread(planes), "spread");
+    }
+
+    [Fact]
     public void KeepsTheMembersCallsignWhenTheyShareOne() =>
         Assert.Equal("Orion", PlaneGrouping.ChooseCallsign("Kerbin",
             new[] { "Kerbin Orion 1/3 - SYNC", "Kerbin Orion 3/3 - SYNC" },
