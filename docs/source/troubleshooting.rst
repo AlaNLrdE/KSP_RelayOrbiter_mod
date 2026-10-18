@@ -99,6 +99,21 @@ These show only in ``KSP.log``; the deployment goes on.
 - *Can't point Normal: releasing SAT-k without orienting (...)* — the carrier's SAS has no
   normal mode (level 1).
 - *Already on the target orbit: no transfer needed* and similar.
+- *RCS pushed the wrong way: reversing it.* — the carrier's RCS push was corrected.
+- *Found an interrupted deployment at step k.* — a resumable deployment is in the save.
+
+CommNet warnings
+----------------
+
+Shown in the plan; they don't block Start.
+
+- *CommNet: <body> blocks the line between neighbours; it needs an orbit above X km.* —
+  raise the orbit or add satellites (three need an orbit above one body radius).
+- *CommNet: with 2 satellites the neighbours are on opposite sides* — two satellites never
+  see each other through the body; use three or more.
+- *CommNet: SAT-k has no relay antenna.*
+- *CommNet: neighbours X km apart, relay range Y km. They won't link* — use stronger relay
+  antennas or more satellites.
 
 MechJeb
 -------

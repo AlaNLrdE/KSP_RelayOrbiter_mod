@@ -30,6 +30,9 @@ Full documentation: **<https://alanlrde.github.io/KSP_RelayOrbiter_mod/>**
   satellite is clear before it turns.
 - **Unique names:** satellites are renamed `Kerbin Orion 2/6 - SYNC i10` and marked
   as relays.
+- **CommNet check:** warns when the satellites won't see or reach each other.
+- **Resume:** a deployment interrupted by a scene reload (or a quickload) can be resumed.
+- **RCS separation:** with RCS, the carrier pushes itself away from each released satellite.
 - **Works with planet packs:** bodies come from the running game (stock, Kopernicus,
   Outer Planets Mod...).
 - **Manual mode too:** a Maneuvers tab creates the nodes and Alarm Clock alarms if you

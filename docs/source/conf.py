@@ -4,7 +4,7 @@
 project   = "Relay Orbiter"
 author    = "Alan Ocegueda"
 copyright = "2026, Alan Ocegueda"
-release   = "1.0.0"
+release   = "1.1.0"
 
 # ── General ───────────────────────────────────────────────────────────────────
 extensions = [

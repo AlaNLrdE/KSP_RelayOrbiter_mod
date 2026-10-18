@@ -30,6 +30,9 @@ Features
   tanks are topped up before each release, and the carrier orients itself so the
   release push doesn't change the satellite's period. See :doc:`automation`.
 - **Unique names:** ``Kerbin Orion 2/6 - SYNC i10``, with the vessel type set to Relay.
+- **CommNet check:** whether the satellites will see and reach each other.
+- **Resume:** a deployment interrupted by a scene reload can be resumed.
+- **RCS separation:** with RCS, the carrier pushes itself away from each satellite.
 - **Planet packs:** the bodies come from the running game (stock, Kopernicus, Outer
   Planets Mod...).
 

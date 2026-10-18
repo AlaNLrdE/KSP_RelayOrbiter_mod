@@ -35,8 +35,10 @@ written to ``KSP.log`` as ``[RelayOrbiter] Step k/n: ...``.
    * - Plan / fly the parking-orbit burn
      - At the time fixed before SAT-1's release (see `Near-circular orbits`_).
    * - Turn the carrier away (SAT-2 onwards)
-     - The carrier turns 90° and waits (up to 45 s) for the satellite to be 10 m further
-       away, so the satellite can turn for its burn without hitting it. The satellite is
+     - With RCS, the carrier first pushes itself away along the separation axis (up to
+       3 s, or 0.5 m/s), checking after 1 s that it moves away and reversing otherwise.
+       Then it turns 90° and waits (up to 45 s) for the satellite to be 10 m further away,
+       so the satellite can turn for its burn without hitting it. The satellite is
        renamed.
    * - Switch to SAT-k
      - The satellite's engines are activated.
@@ -91,7 +93,7 @@ Safety mechanisms
        attached. Only the carrier's own tanks are used, the largest first.
    * - Abort, leaving the scene
      - Abort stops thrust and warp and restores the load range. Leaving the flight scene
-       stops the deployment.
+       stops the deployment, but it is saved and can be resumed (see :doc:`user_guide`).
 
 Near-circular orbits
 --------------------

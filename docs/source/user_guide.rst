@@ -81,6 +81,10 @@ orbit, no burn of its own), the carrier's parking burn and each satellite's
 circularization burn with their durations, the total time, each satellite's fuel and the
 **carrier delta-v needed**, compared with what the carrier alone has.
 
+**CommNet.** When CommNet is on, whether neighbouring satellites will link: the body must not
+block the line between them, and their relay antennas must reach each other (KSP's own
+range rule, with the game's range modifier). It is a warning only; it never blocks Start.
+
 **Options.**
 
 - **Top up the satellites' tanks from the carrier** (at start and before each release).
@@ -96,6 +100,16 @@ status, with **Fast forward** (when waiting on time warp) and **Abort**.
    While a deployment runs, **don't touch the controls, switch vessels or leave the
    flight scene.** The mod switches to each satellite and back by itself. Switching to a
    vessel that is not loaded, or leaving the scene, reloads it and stops the deployment.
+
+Resuming an interrupted deployment
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A running deployment is kept in the save file. When the game reloads the flight scene
+(switching to an unloaded vessel, leaving and coming back, or quickloading a save made
+during the deployment), the Automation tab shows **Interrupted deployment** with the step it
+stopped at: **Resume deployment** goes on from there, **Discard it** forgets it. The carrier
+must be loaded (switch to it, or near it). Steps that plan a node are planned again, and if
+the parking burn's time passed while interrupted, the carrier waits for the next one.
 
 Launching from the pad
 ~~~~~~~~~~~~~~~~~~~~~~

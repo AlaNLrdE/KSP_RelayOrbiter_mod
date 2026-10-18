@@ -6,11 +6,12 @@ Limitations
   longitude of the ascending node is not chosen. For relay coverage it makes no
   difference.
 - **2 to 12 satellites**, all on the same orbit.
-- **No resuming.** If the game reloads the flight scene during a deployment (switching to
-  an unloaded vessel, leaving the scene, quickloading), the deployment stops; load the
-  quicksave from before it and start again.
-- **Gentle separation.** Docking ports push satellites away slowly; there is no RCS
-  assist yet, only the carrier's 90° turn.
+- **Resuming is manual.** When the game reloads the flight scene during a deployment, it
+  stops and waits for **Resume deployment**; the carrier must be loaded.
+- **Gentle separation without RCS.** Docking ports push satellites away slowly; a carrier
+  without RCS only turns 90° before the satellite turns.
+- **CommNet check** covers the links between neighbouring satellites, not the link to the
+  ground stations.
 - **Electric charge is not topped up**, only fuel. Satellites need their own power.
 - **MechJeb is reached by reflection** (tested with 2.15); a MechJeb release that changes
   its internals can break the launch step, but nothing else.
