@@ -139,7 +139,7 @@ namespace RelayOrbiter.Plugin
             else if (_tab == 1)
                 _maneuvers.Draw(body, option != null && option.IsValid ? option.Altitude : (double?)null);
             else if (_tab == 2)
-                _automation.Draw(current, body, option != null && option.IsValid ? option.Altitude : (double?)null,
+                _automation.Draw(current, body, RouteTo(current, body), option != null && option.IsValid ? option.Altitude : (double?)null,
                                  option == null ? "Enter a valid target altitude."
                                  : option.IsValid ? null : StatusText(body, option));
             else if (option == null) { }
@@ -185,22 +185,51 @@ namespace RelayOrbiter.Plugin
             return _body != null;
         }
 
-        // Deploy around the body orbited, or travel to one of its moons first (not from
-        // the Sun: interplanetary transfers come later).
+        // Deploy around the body orbited, or travel first: to one of its moons, a sibling
+        // (another planet around the same star, another moon of the same planet) or a
+        // sibling's moon. ◀ ▶ cycle through them.
         private Body DrawDestination(Body current)
         {
-            var moons = current.Parent == null ? new List<Body>() : _db.ChildrenOf(current.Name).ToList();
-            if (moons.Count == 0 || _automation.IsRunning || _automation.IsLaunching) return Destination(current, moons);
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Deploy around", _header, GUILayout.Width(110f));
-            _deployAt = Mathf.Clamp(_deployAt, 0, moons.Count);
-            _deployAt = GUILayout.Toolbar(_deployAt, new[] { current.Name }.Concat(moons.Select(m => m.Name)).ToArray());
-            GUILayout.EndHorizontal();
-            return Destination(current, moons);
+            var options = Destinations(current);
+            _deployAt = Mathf.Clamp(_deployAt, 0, options.Count - 1);
+            if (options.Count > 1 && !_automation.IsRunning && !_automation.IsLaunching)
+            {
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("Deploy around", _header, GUILayout.Width(110f));
+                if (GUILayout.Button("◀", GUILayout.Width(28f))) _deployAt = (_deployAt + options.Count - 1) % options.Count;
+                var d = options[_deployAt];
+                GUILayout.Label($"{d.Name}  ({RouteLabel(current, d)})", GUILayout.ExpandWidth(true));
+                if (GUILayout.Button("▶", GUILayout.Width(28f))) _deployAt = (_deployAt + 1) % options.Count;
+                GUILayout.EndHorizontal();
+            }
+            return options[_deployAt];
         }
 
-        private Body Destination(Body current, List<Body> moons) =>
-            _deployAt > 0 && _deployAt <= moons.Count ? moons[_deployAt - 1] : current;
+        // The body orbited, its moons, then each sibling followed by its moons.
+        private List<Body> Destinations(Body current)
+        {
+            var list = new List<Body> { current };
+            list.AddRange(_db.ChildrenOf(current.Name));
+            if (current.Parent != null)
+                foreach (var sibling in _db.ChildrenOf(current.Parent).Where(b => b.Name != current.Name))
+                {
+                    list.Add(sibling);
+                    list.AddRange(_db.ChildrenOf(sibling.Name));
+                }
+            return list;
+        }
+
+        public TransferRoute RouteTo(Body current, Body destination) =>
+            Routes.Find(current.Name, destination.Name, n => _db.Find(n)?.Parent);
+
+        private string RouteLabel(Body current, Body d) => RouteTo(current, d) switch
+        {
+            TransferRoute.None         => "here",
+            TransferRoute.Moon         => "moon, direct transfer",
+            TransferRoute.Sibling      => current.Parent == null ? "transfer" : $"transfer around {current.Parent}",
+            TransferRoute.SiblingsMoon => $"moon of {d.Parent}, via {d.Parent}",
+            _                          => "not reachable",
+        };
 
         private AltitudeOption? DrawAltitudeSelector(Body body)
         {
