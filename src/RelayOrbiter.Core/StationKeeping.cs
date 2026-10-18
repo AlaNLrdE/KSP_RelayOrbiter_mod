@@ -32,6 +32,9 @@ namespace RelayOrbiter.Core
         public const double PhaseToleranceDeg  = 0.5;    // off its slot by less: fine
         public const double PeriodToleranceRel = 1e-4;   // period error (≈0.04°/orbit of drift)
         public const int    MaxPhasingOrbits   = 10;
+        // A constellation kept in shape can be bigger than one carrier deploys (Resonance).
+        public const int    MinSlots           = 2;
+        public const int    MaxSlots           = 36;
         public const double ShapeToleranceRel  = 0.01;   // apsides this close to the target: no transfer
 
         // Fit N slots to the satellites' mean longitudes (degrees), keeping their order

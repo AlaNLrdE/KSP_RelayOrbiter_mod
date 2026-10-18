@@ -18,17 +18,25 @@ namespace RelayOrbiter.Core
         CreateTransferNode,           // carrier: first Hohmann burn towards the target orbit
         CreateTargetCircularizeNode,  // carrier: circularize at the target orbit
         CreatePlaneChangeNode,        // carrier: rotate the orbit plane at the next node
+        CreateMoonPlaneNode,          // carrier: rotate into the destination moon's orbital plane (skipped when in it)
+        CreateEjectionNode,           // carrier: leave for the destination moon at the next window
+        CreateCourseCorrectionNode,   // carrier: fine-tune the encounter's periapsis (skipped when good)
+        WarpToSoi,                    // warp until the carrier enters the destination's sphere of influence
+        CreateCaptureNode,            // carrier: circularize at the periapsis around the destination
     }
 
     // What to do before the deployment to reach the target orbit.
     public sealed class TransferSteps
     {
-        public TransferSteps(bool transfer, bool planeChange, bool planeChangeFirst)
+        public TransferSteps(bool transfer, bool planeChange, bool planeChangeFirst, bool moon = false)
         {
             Transfer         = transfer;
             PlaneChange      = planeChange;
             PlaneChangeFirst = planeChangeFirst;
+            Moon             = moon;
         }
+
+        public bool Moon             { get; }  // first travel to a moon of the current body
 
         public bool Transfer         { get; }
         public bool PlaneChange      { get; }
@@ -79,6 +87,14 @@ namespace RelayOrbiter.Core
             {
                 void Burn(StepKind create) =>
                     steps.AddRange(new[] { new SequenceStep(create), new SequenceStep(StepKind.ExecuteNode) });
+                if (prelude.Moon)
+                {
+                    Burn(StepKind.CreateMoonPlaneNode);
+                    Burn(StepKind.CreateEjectionNode);
+                    Burn(StepKind.CreateCourseCorrectionNode);
+                    steps.Add(new SequenceStep(StepKind.WarpToSoi));
+                    Burn(StepKind.CreateCaptureNode);
+                }
                 if (prelude.PlaneChange && prelude.PlaneChangeFirst) Burn(StepKind.CreatePlaneChangeNode);
                 if (prelude.Transfer)
                 {

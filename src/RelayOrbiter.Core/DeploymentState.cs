@@ -27,6 +27,7 @@ namespace RelayOrbiter.Core
         public bool     Transfer        { get; set; }
         public bool     PlaneChange     { get; set; }
         public bool     PlaneChangeFirst { get; set; }
+        public string?  Destination     { get; set; }          // moon to travel to first (body name); null: stay
         public float    SavedLoad       { get; set; }          // carrier's own load range, to restore
         public float    SavedUnload     { get; set; }
 
@@ -59,6 +60,7 @@ namespace RelayOrbiter.Core
             };
             if (Names != null) v["Names"] = string.Join(",", Names.Select(Uri.EscapeDataString));
             if (GoalInclination.HasValue) v["GoalInclination"] = Num(GoalInclination.Value);
+            if (Destination != null) v["Destination"] = Uri.EscapeDataString(Destination);
             return v;
         }
 
@@ -89,6 +91,7 @@ namespace RelayOrbiter.Core
                 Transfer         = bool.Parse(Get("Transfer")),
                 PlaneChange      = bool.Parse(Get("PlaneChange")),
                 PlaneChangeFirst = bool.Parse(Get("PlaneChangeFirst")),
+                Destination      = values.TryGetValue("Destination", out var d) ? Uri.UnescapeDataString(d) : null,
                 SavedLoad        = float.Parse(Get("SavedLoad"), Inv),
                 SavedUnload      = float.Parse(Get("SavedUnload"), Inv),
             };

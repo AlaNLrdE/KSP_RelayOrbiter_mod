@@ -86,4 +86,13 @@ public class DeploymentStateTests
     [Fact]
     public void MissingValuesAreRejected() =>
         Assert.Throws<FormatException>(() => DeploymentState.FromValues(new Dictionary<string, string>()));
+
+    [Fact]
+    public void DestinationRoundTrips()
+    {
+        var s = Sample();
+        s.Destination = "The Mun";
+        Assert.Equal("The Mun", RoundTrip(s).Destination);
+        Assert.Null(RoundTrip(Sample()).Destination);
+    }
 }

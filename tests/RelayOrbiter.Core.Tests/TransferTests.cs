@@ -157,4 +157,20 @@ public class TransferTests
         Assert.Equal(new[] { StepKind.CreatePlaneChangeNode, StepKind.ExecuteNode, StepKind.WarpToRelease },
                      steps.Take(3).Select(s => s.Kind));
     }
+
+    [Fact]
+    public void MoonTransferComesFirstThenTheTargetOrbit()
+    {
+        var steps = DeploymentSequence.Build(40.0, new[] { 9.0, 9.0 },
+            new TransferSteps(transfer: true, planeChange: true, planeChangeFirst: false, moon: true));
+        Assert.Equal(new[]
+        {
+            StepKind.CreateMoonPlaneNode, StepKind.ExecuteNode,
+            StepKind.CreateEjectionNode, StepKind.ExecuteNode,
+            StepKind.CreateCourseCorrectionNode, StepKind.ExecuteNode,
+            StepKind.WarpToSoi,
+            StepKind.CreateCaptureNode, StepKind.ExecuteNode,
+            StepKind.CreateTransferNode,
+        }, steps.Take(10).Select(s => s.Kind));
+    }
 }

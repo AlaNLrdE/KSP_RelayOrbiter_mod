@@ -94,7 +94,7 @@ namespace RelayOrbiter.Core
             }
             if (numbered.Count < 2) return null;
             int count = Math.Max(numbered.Count, numbered.Max(x => x.k));
-            count = Math.Min(Math.Max(count, Resonance.MinSatellites), Resonance.MaxSatellites);
+            count = Math.Min(Math.Max(count, StationKeeping.MinSlots), StationKeeping.MaxSlots);
             return new GroupSuggestion(prefix, count,
                                        numbered.OrderBy(x => x.k).Select(x => x.name).ToList(), false);
         }
