@@ -21,6 +21,7 @@ comes back to the carrier.
    overview
    installation
    user_guide
+   maintenance
    vessel_design
    troubleshooting
 

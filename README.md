@@ -31,6 +31,8 @@ Full documentation: **<https://alanlrde.github.io/KSP_RelayOrbiter_mod/>**
 - **Unique names:** satellites are renamed `Kerbin Orion 2/6 - SYNC i10` and marked
   as relays.
 - **CommNet check:** warns when the satellites won't see or reach each other.
+- **Constellation maintenance:** finds a constellation from the satellites' names and puts
+  one satellite, or all of them in parallel, back in their slots with precise phasing burns.
 - **Resume:** a deployment interrupted by a scene reload (or a quickload) can be resumed.
 - **RCS separation:** with RCS, the carrier pushes itself away from each released satellite.
 - **Works with planet packs:** bodies come from the running game (stock, Kopernicus,
