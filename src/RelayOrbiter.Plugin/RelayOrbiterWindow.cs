@@ -84,7 +84,7 @@ namespace RelayOrbiter.Plugin
             var option = DrawAltitudeSelector(body);
             GUILayout.Space(6f);
 
-            if (_automation.IsRunning || _automation.IsLaunching) _tab = 2;
+            if (_automation.IsRunning || _automation.IsLaunching || _automation.HasPending) _tab = 2;
             _tab = GUILayout.Toolbar(_tab, new[] { "Results", "Maneuvers", "Automation" });
 
             if (_tab == 1)
@@ -226,6 +226,12 @@ namespace RelayOrbiter.Plugin
             if (!r.SoiOk)
                 GUILayout.Label($"The parking orbit's apoapsis leaves {body.Name}'s SOI. " +
                                 "Choose a lower altitude or more satellites.", _warn);
+            if (!Coverage.LineOfSight(r.RC, body.Radius, r.Satellites))
+                GUILayout.Label($"CommNet: {body.Name} blocks the line between neighbouring satellites at " +
+                                "this altitude; they won't relay to each other.", _warn);
+            else
+                Row("Neighbours apart", Km(Coverage.NeighbourDistance(r.RC, r.Satellites)) +
+                                        " (line of sight clear; check the relay antennas' range)");
 
             GUILayout.Label("Deployment procedure", _header);
             string te = _formatTime(r.TE);

@@ -49,11 +49,16 @@ namespace RelayOrbiter.Plugin
             _calculator = calculator;
             _settings   = settings;
             _formatTime = formatTime;
+            // What the save file keeps while a deployment runs.
+            RelayOrbiterScenario.Provider = () => IsRunning ? _runner!.ToState() : null;
         }
 
         public bool IsRunning => _runner != null && _runner.State == DeploymentRunner.RunState.Running;
 
         public bool IsLaunching => _launch != null;
+
+        // A deployment from the save file can be resumed.
+        public bool HasPending => _runner == null && RelayOrbiterScenario.Pending != null;
 
         public void Tick()
         {
@@ -73,6 +78,7 @@ namespace RelayOrbiter.Plugin
             if (_ok == null) CreateStyles();
             if (_runner != null) { DrawRunner(); return; }
             if (_launch != null) { DrawLaunching(); return; }  // first, so Abort is always there
+            if (RelayOrbiterScenario.Pending != null) { DrawResume(RelayOrbiterScenario.Pending); return; }
 
             var vessel = FlightGlobals.ActiveVessel;
             if (vessel == null) { Warn("No active vessel."); return; }
@@ -121,7 +127,7 @@ namespace RelayOrbiter.Plugin
             }
 
             // The vessel's checks come after the satellites', so they show on the launch pad too.
-            if (onGround) { DrawLaunch(vessel, selected, target, targetProblem, n); return; }
+            if (onGround) { DrawLaunch(vessel, selected, target, targetProblem, n, order); return; }
             if (vessel.situation != Vessel.Situations.ORBITING) { Warn("Get into a stable orbit first."); return; }
             if (_altitudes.Validate(selected, orbit.ApA) != AltitudeStatus.Ok) { Warn("The apoapsis is not usable."); return; }
             var solver = vessel.patchedConicSolver;
@@ -194,6 +200,8 @@ namespace RelayOrbiter.Plugin
                     : $"{fill:P0}" + (_topUp ? ", topped up from the carrier at start" : ""));
             }
             _topUp = GUILayout.Toggle(_topUp, " Top up the satellites' tanks from the carrier (at start and before each release)");
+
+            DrawCoverage(vessel, selected, rGoal, order, n);
             if (_topUp && ResourceTopUp.Shortfall(satTanks, transfers) > 1e-3)
                 Warn("The carrier doesn't have enough fuel to fill every satellite; they get what is left.");
 
@@ -285,9 +293,40 @@ namespace RelayOrbiter.Plugin
                             _warn);
         }
 
+        // ── CommNet coverage (a warning, never a blocker) ────────────────────
+
+        private void DrawCoverage(Vessel vessel, Body body, double radius, List<SatelliteCandidate> order, int n)
+        {
+            if (!VesselParts.CommNetEnabled) return;
+            double chord = Coverage.NeighbourDistance(radius, n);
+            if (!Coverage.LineOfSight(radius, body.Radius, n))
+            {
+                double rMin = Coverage.MinRadiusForLineOfSight(body.Radius, n);
+                Warn(double.IsInfinity(rMin)
+                    ? $"CommNet: with {n} satellites the neighbours are on opposite sides of {body.Name} " +
+                      "and can't see each other."
+                    : $"CommNet: {body.Name} blocks the line between neighbours; it needs an orbit above " +
+                      $"{Km(rMin - body.Radius)}.");
+                return;
+            }
+            var powers = order.Select(c => VesselParts.RelayPower(vessel, c.PartIds)).ToArray();
+            int weakest = Array.IndexOf(powers, powers.Min());
+            if (powers[weakest] <= 0.0)
+            {
+                Warn($"CommNet: SAT-{weakest + 1} has no relay antenna.");
+                return;
+            }
+            // Neighbours on the orbit are consecutive in release order (cyclically).
+            double range = Enumerable.Range(0, n).Min(k => Coverage.Range(powers[k], powers[(k + 1) % n]));
+            string text = $"neighbours {Km(chord)} apart, relay range {Km(range)}";
+            if (range >= chord) Row("CommNet", text + ": linked");
+            else Warn($"CommNet: {text}. They won't link: use stronger relay antennas or more satellites.");
+        }
+
         // ── Launch from the ground with MechJeb ──────────────────────────────
 
-        private void DrawLaunch(Vessel vessel, Body body, double? target, string? targetProblem, int n)
+        private void DrawLaunch(Vessel vessel, Body body, double? target, string? targetProblem, int n,
+                                List<SatelliteCandidate> order)
         {
             GUILayout.Label("Launch to orbit (MechJeb)", _header);
             if (!target.HasValue)
@@ -315,6 +354,7 @@ namespace RelayOrbiter.Plugin
                              (inclination < Math.Abs(vessel.latitude) ? " (or the launch site's latitude)" : ""));
             Row("Then", (launchAlt < target.Value - 1.0 ? $"transfer to {Km(target.Value)}, " : "") +
                         $"deploy {n} satellites, {Resonance.SpacingDeg(n):F0}° apart");
+            DrawCoverage(vessel, body, body.Radius + target.Value, order, n);
             _continueAfterLaunch = GUILayout.Toggle(_continueAfterLaunch, " Continue with the deployment once in orbit");
 
             bool wasEnabled = GUI.enabled;
@@ -400,14 +440,58 @@ namespace RelayOrbiter.Plugin
                 Debug.Log("[RelayOrbiter] Could not find a satellite's command part.");
                 return;
             }
-            _runner = new DeploymentRunner(
-                DeploymentSequence.Build(carrierBurn, satBurns, prelude), vessel,
-                order.Select(c => c.SeparatorId).ToArray(), parts!,
-                order.Select(c => c.Name).ToArray(),
-                order.Select(c => c.PartIds.ToArray()).ToArray(), _extendPanels, _topUp, parking,
-                _transfer, goalRadius, _settings.ChangeInclination ? _settings.InclinationDeg : (double?)null,
-                _settings.NameSatellites ? names : null,
-                _planner, _formatTime);
+            var state = new DeploymentState
+            {
+                Carrier          = vessel.persistentId,
+                Separators       = order.Select(c => c.SeparatorId).ToArray(),
+                CommandParts     = parts.Select(p => p!.flightID).ToArray(),
+                SatelliteParts   = order.Select(c => c.PartIds.ToArray()).ToArray(),
+                Names            = _settings.NameSatellites ? names : null,
+                ExtendPanels     = _extendPanels,
+                TopUp            = _topUp,
+                Parking          = parking,
+                GoalRadius       = goalRadius,
+                GoalInclination  = _settings.ChangeInclination ? _settings.InclinationDeg : (double?)null,
+                CarrierBurn      = carrierBurn,
+                SatelliteBurns   = satBurns,
+                Transfer         = prelude.Transfer,
+                PlaneChange      = prelude.PlaneChange,
+                PlaneChangeFirst = prelude.PlaneChangeFirst,
+            };
+            _runner = new DeploymentRunner(state, vessel, false, _planner, _transfer, _formatTime);
+        }
+
+        // ── Resuming an interrupted deployment ───────────────────────────────
+
+        private void DrawResume(DeploymentState pending)
+        {
+            GUILayout.Label("Interrupted deployment", _header);
+            int total = DeploymentSequence.Build(pending.CarrierBurn, pending.SatelliteBurns,
+                new TransferSteps(pending.Transfer, pending.PlaneChange, pending.PlaneChangeFirst)).Count;
+            Vessel? carrier = null;
+            foreach (var v in FlightGlobals.Vessels)
+                if (v.persistentId == pending.Carrier) carrier = v;
+            Row("Satellites", $"{pending.Separators.Length}, {pending.LastReleased + 1} released");
+            Row("Stopped at", $"step {pending.Step + 1}/{total}");
+
+            if (carrier == null)
+                Warn("The carrier of that deployment no longer exists.");
+            else if (!carrier.loaded)
+                Warn($"The carrier ({carrier.vesselName}) is not loaded: switch to it, or near it, to resume.");
+            else
+            {
+                GUILayout.Label("The game reloaded the flight scene. The deployment can go on from where it was.");
+                if (GUILayout.Button("Resume deployment"))
+                {
+                    _runner = new DeploymentRunner(pending, carrier, true, _planner, _transfer, _formatTime);
+                    RelayOrbiterScenario.Pending = null;
+                }
+            }
+            if (GUILayout.Button("Discard it"))
+            {
+                Debug.Log("[RelayOrbiter] Interrupted deployment discarded.");
+                RelayOrbiterScenario.Pending = null;
+            }
         }
 
         private void DrawRunner()

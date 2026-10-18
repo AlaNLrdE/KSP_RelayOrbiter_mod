@@ -182,20 +182,20 @@ namespace RelayOrbiter.Plugin
         }
 
         // Stop thrusting and give the controls back. Safe to call more than once.
+        // Also called while the flight scene is being destroyed: everything may be gone.
         public void Finish()
         {
             _throttle = 0f;
             if (_attached)
             {
-                _vessel.OnFlyByWire -= Drive;
+                if (_vessel != null) _vessel.OnFlyByWire -= Drive;
                 _attached = false;
             }
-            if (FlightGlobals.ActiveVessel == _vessel)
-            {
-                FlightInputHandler.state.mainThrottle = 0f;
-                if (_vessel.Autopilot.CanSetMode(VesselAutopilot.AutopilotMode.StabilityAssist))
-                    _vessel.Autopilot.SetMode(VesselAutopilot.AutopilotMode.StabilityAssist);
-            }
+            if (_vessel == null || FlightGlobals.ActiveVessel != _vessel) return;
+            if (FlightInputHandler.state != null) FlightInputHandler.state.mainThrottle = 0f;
+            var autopilot = _vessel.Autopilot;
+            if (autopilot != null && autopilot.CanSetMode(VesselAutopilot.AutopilotMode.StabilityAssist))
+                autopilot.SetMode(VesselAutopilot.AutopilotMode.StabilityAssist);
         }
 
         private Result Fail(string error)

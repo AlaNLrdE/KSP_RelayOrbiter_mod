@@ -131,6 +131,28 @@ namespace RelayOrbiter.Plugin
             return BurnTiming.DeltaV(isp, wet, wet - System.Math.Max(0.0, fuel));
         }
 
+        // Combined relay-antenna power of the given parts, with the game's CommNet range
+        // modifier applied (0 when they have no relay antenna).
+        public static double RelayPower(Vessel vessel, IEnumerable<uint> partIds)
+        {
+            var antennas = partIds.Select(id => Find(vessel, id)).Where(p => p != null)
+                .SelectMany(p => p!.FindModulesImplementing<ModuleDataTransmitter>())
+                .Where(t => t.antennaType == AntennaType.RELAY)
+                .Select(t => (t.antennaPower, t.antennaCombinable, t.antennaCombinableExponent))
+                .ToList();
+            return Coverage.CombinedPower(antennas) * RangeModifier();
+        }
+
+        // Usable RCS thrusters on the vessel.
+        public static bool HasRcs(Vessel vessel) =>
+            vessel.FindPartModulesImplementing<ModuleRCS>().Any(r => r.isEnabled && r.rcsEnabled && !r.flameout);
+
+        public static bool CommNetEnabled =>
+            CommNet.CommNetScenario.CommNetEnabled;
+
+        private static double RangeModifier() =>
+            HighLogic.CurrentGame?.Parameters.CustomParams<CommNet.CommNetParams>()?.rangeModifier ?? 1.0;
+
         // Why a vessel may not be able to use SAS, for status lines and KSP.log.
         public static string ControlReport(Vessel vessel)
         {

@@ -42,8 +42,13 @@ namespace RelayOrbiter.Plugin
 
         private void OnDestroy()
         {
-            _window?.Abort();  // leaving the scene stops a running deployment
-            SaveSettings();
+            // Leaving the scene stops a running deployment (it is in the save file, so it can
+            // be resumed). Whatever happens there, the clean-up below must run, or the stale
+            // toolbar button and events keep pointing at this destroyed add-on.
+            try { _window?.Abort(); }
+            catch (Exception e) { Debug.LogException(e); }
+            try { SaveSettings(); }
+            catch (Exception e) { Debug.LogException(e); }
             GameEvents.onGUIApplicationLauncherReady.Remove(AddButton);
             GameEvents.onGUIApplicationLauncherDestroyed.Remove(RemoveButton);
             GameEvents.onHideUI.Remove(OnHideUI);

@@ -24,9 +24,10 @@ namespace RelayOrbiter.Plugin
         private const float  UnloadRange   = 25_000f;  // m
 
         private readonly IReadOnlyList<SequenceStep> _steps;
+        private readonly DeploymentState _state;      // what was started (and is saved for resuming)
         private readonly Vessel _carrier;
-        private readonly uint[] _separators;      // flight ids, release order
-        private readonly Part[] _satelliteParts;  // command parts: identify each satellite's vessel
+        private readonly uint[] _separators;          // flight ids, release order
+        private readonly uint[] _commandParts;        // flight ids: identify each satellite's vessel
         private readonly string[] _names;
         private readonly uint[][] _satellitePartIds;  // every part each release detaches
         private readonly bool _extendPanels, _topUp;
@@ -42,11 +43,21 @@ namespace RelayOrbiter.Plugin
         private VesselAutopilot.AutopilotMode? _clearMode;
         private double _clearStart;
         private double _clearFromDistance = double.NaN;  // satellite distance right after release
+
+        // RCS push away from a released satellite, before the carrier turns.
+        private const double RcsPushSeconds = 3.0;   // s at most
+        private const double RcsTargetSpeed = 0.5;   // m/s of separation: enough
+        private const double RcsCheckAfter  = 1.0;   // s: then check the push goes the right way
+        private bool _rcsPushing, _rcsChecked, _rcsWasOn, _rcsAttached;
+        private double _rcsStart, _rcsStartSpeed;
+        private float _rcsSign = 1f;
+        private Vector3 _translate;                  // local translation command (X, Y, Z)
         private readonly IDeploymentPlanner _planner;
         private readonly Func<double, string> _formatTime;
 
         private int _index;
         private bool _started;
+        private bool _resumePending;   // first Tick after a resume: make the current step safe to re-run
         private double _until;
         private Vessel? _target;
         private NodeExecutor? _executor;
@@ -60,40 +71,102 @@ namespace RelayOrbiter.Plugin
         private bool _released;
         private readonly float _savedLoad, _savedUnload;
 
-        public DeploymentRunner(IReadOnlyList<SequenceStep> steps, Vessel carrier,
-                                uint[] separators, Part[] satelliteParts, string[] names,
-                                uint[][] satellitePartIds, bool extendPanels, bool topUp, ParkingOrbit parking,
-                                TransferPlanner transfer, double goalRadius, double? goalInclination,
-                                string[]? satelliteNames,
-                                IDeploymentPlanner planner, Func<double, string> formatTime)
+        // A new deployment (resumed = false) or one resumed from a saved state.
+        public DeploymentRunner(DeploymentState state, Vessel carrier, bool resumed,
+                                IDeploymentPlanner planner, TransferPlanner transfer, Func<double, string> formatTime)
         {
-            _steps          = steps;
-            _carrier        = carrier;
-            _separators     = separators;
-            _satelliteParts = satelliteParts;
-            _names          = names;
-            _satellitePartIds = satellitePartIds;
-            _extendPanels   = extendPanels;
-            _topUp          = topUp;
-            _parking        = parking;
-            _transfer       = transfer;
-            _goalRadius     = goalRadius;
-            _goalInclination = goalInclination;
-            _satelliteNames = satelliteNames;
-            _planner        = planner;
-            _formatTime     = formatTime;
+            _state            = state;
+            _steps            = DeploymentSequence.Build(state.CarrierBurn, state.SatelliteBurns,
+                                    new TransferSteps(state.Transfer, state.PlaneChange, state.PlaneChangeFirst));
+            _carrier          = carrier;
+            _separators       = state.Separators;
+            _commandParts     = state.CommandParts;
+            _satelliteNames   = state.Names;
+            _names            = state.Names ?? state.Separators.Select(_ => "satellite").ToArray();
+            _satellitePartIds = state.SatelliteParts;
+            _extendPanels     = state.ExtendPanels;
+            _topUp            = state.TopUp;
+            _parking          = state.Parking;
+            _goalRadius       = state.GoalRadius;
+            _goalInclination  = state.GoalInclination;
+            _planner          = planner;
+            _transfer         = transfer;
+            _formatTime       = formatTime;
+            _index            = state.Step;
+            _parkingUT        = state.ParkingUT;
+            _lastReleased     = state.LastReleased;
+            _resumePending    = resumed;
 
             var orbit = carrier.vesselRanges.orbit;
-            _savedLoad   = orbit.load;
-            _savedUnload = orbit.unload;
+            _savedLoad   = resumed ? state.SavedLoad : orbit.load;
+            _savedUnload = resumed ? state.SavedUnload : orbit.unload;
             if (orbit.unload < UnloadRange)
             {
                 orbit.load   = LoadRange;
                 orbit.unload = UnloadRange;
             }
-            Log($"Deployment started: {separators.Length} satellites, {parking} parking orbit. " +
+            Log((resumed ? $"Deployment resumed at step {Step}/{Steps}: " : "Deployment started: ") +
+                $"{_separators.Length} satellites, {_parking} parking orbit. " +
                 $"Carrier stays loaded up to {orbit.load / 1000f:F1} km (was {_savedLoad / 1000f:F1} km).");
         }
+
+        // The state to save so this deployment can be resumed after a scene reload.
+        public DeploymentState ToState()
+        {
+            var v = _state.ToValues();
+            var copy = DeploymentState.FromValues(new Dictionary<string, string>(v));
+            copy.Step         = Math.Min(_index, _steps.Count);
+            copy.ParkingUT    = _parkingUT;
+            copy.LastReleased = _lastReleased;
+            copy.SavedLoad    = _savedLoad;
+            copy.SavedUnload  = _savedUnload;
+            return copy;
+        }
+
+        // A satellite's command part and vessel, found by flight id among the loaded
+        // vessels (references don't survive a scene reload).
+        private Part? CommandPart(int k)
+        {
+            foreach (var v in FlightGlobals.Vessels)
+                if (v.loaded)
+                    foreach (var p in v.parts)
+                        if (p.flightID == _commandParts[k]) return p;
+            return null;
+        }
+
+        private Vessel? SatelliteVessel(int k) => CommandPart(k)?.vessel;
+
+        // After a resume, make the current step safe to run again: no duplicate nodes,
+        // no node step without its node, and a fresh parking burn time if it passed.
+        private void PrepareResume()
+        {
+            double now = Planetarium.GetUniversalTime();
+            int parkingNode = IndexOf(StepKind.CreateParkingNode);
+            if (_index <= parkingNode && !double.IsNaN(_parkingUT) && _parkingUT < now + MinNodeLead)
+            {
+                _parkingUT = double.NaN;
+                _index = IndexOf(StepKind.WarpToRelease);
+                Log("The parking burn's time passed while interrupted: waiting for the next one.");
+            }
+            var vessel = FlightGlobals.ActiveVessel;
+            var solver = vessel != null ? vessel.patchedConicSolver : null;
+            if (_index < _steps.Count && _steps[_index].Kind == StepKind.ExecuteNode &&
+                (solver == null || solver.maneuverNodes.Count == 0) && _index > 0)
+                _index--;  // plan the node again
+            if (_index < _steps.Count && IsCreateNode(_steps[_index].Kind) && solver != null)
+                foreach (var node in solver.maneuverNodes.ToList()) node.RemoveSelf();
+        }
+
+        private int IndexOf(StepKind kind)
+        {
+            for (int i = 0; i < _steps.Count; ++i) if (_steps[i].Kind == kind) return i;
+            return -1;
+        }
+
+        private static bool IsCreateNode(StepKind k) =>
+            k == StepKind.CreateParkingNode || k == StepKind.CreateCircularizeNode ||
+            k == StepKind.CreateTransferNode || k == StepKind.CreateTargetCircularizeNode ||
+            k == StepKind.CreatePlaneChangeNode;
 
         public RunState State  { get; private set; } = RunState.Running;
         public string   Status { get; private set; } = "";
@@ -105,6 +178,11 @@ namespace RelayOrbiter.Plugin
         public void Tick()
         {
             if (State != RunState.Running) return;
+            if (_resumePending)
+            {
+                _resumePending = false;
+                PrepareResume();
+            }
             if (_index >= _steps.Count)
             {
                 State = RunState.Done;
@@ -188,7 +266,7 @@ namespace RelayOrbiter.Plugin
                     break;
 
                 case StepKind.SwitchToSatellite:
-                    _target = _satelliteParts[s.Satellite].vessel;
+                    _target = SatelliteVessel(s.Satellite);
                     if (_target == null || _target == _carrier) { Fail($"{Sat(s.Satellite)} did not separate."); break; }
                     _until = now + SwitchTimeout;
                     FlightGlobals.ForceSetActiveVessel(_target);
@@ -242,6 +320,12 @@ namespace RelayOrbiter.Plugin
                     _released = true;
                     _lastReleased = s.Satellite;
                     var part = VesselParts.Find(_carrier, _separators[s.Satellite]);
+                    var already = SatelliteVessel(s.Satellite);
+                    if (part == null && already != null && already != _carrier)
+                    {
+                        Log($"{Sat(s.Satellite)} was already released.");
+                        return true;
+                    }
                     if (part == null || !VesselParts.Release(part))
                     {
                         Fail($"Could not release {Sat(s.Satellite)}.");
@@ -292,7 +376,7 @@ namespace RelayOrbiter.Plugin
         {
             var separator = VesselParts.Find(_carrier, _separators[k]);
             return separator == null ? Vector3.zero
-                : _satelliteParts[k].transform.position - separator.transform.position;
+                : (CommandPart(k)?.transform.position ?? separator.transform.position) - separator.transform.position;
         }
 
         private void BeginOrient(int k, double now)
@@ -377,7 +461,7 @@ namespace RelayOrbiter.Plugin
         private void NameSatellite(int k)
         {
             if (_satelliteNames == null || k < 0) return;
-            var sat = _satelliteParts[k].vessel;
+            var sat = SatelliteVessel(k);
             if (sat == null || sat == _carrier) return;
             string old = sat.vesselName;
             sat.vesselName = _satelliteNames[k];
@@ -398,14 +482,79 @@ namespace RelayOrbiter.Plugin
                 ? VesselAutopilot.AutopilotMode.Prograde
                 : VesselAutopilot.AutopilotMode.Normal;
             _clearMode = _carrier.Autopilot.CanSetMode(mode) ? mode : (VesselAutopilot.AutopilotMode?)null;
+
+            _rcsPushing = VesselParts.HasRcs(_carrier);
+            _rcsChecked = false;
+            _rcsSign = 1f;
+            _rcsStart = now;
+            _rcsStartSpeed = double.NaN;
+            if (_rcsPushing)
+            {
+                _rcsWasOn = _carrier.ActionGroups[KSPActionGroup.RCS];
+                _carrier.ActionGroups.SetGroup(KSPActionGroup.RCS, true);
+                if (!_rcsAttached) { _carrier.OnFlyByWire += Translate; _rcsAttached = true; }
+            }
+        }
+
+        private void Translate(FlightCtrlState s)
+        {
+            s.X = _translate.x;
+            s.Y = _translate.y;
+            s.Z = _translate.z;
+        }
+
+        // Push the carrier away from the satellite with RCS, along the separation axis
+        // (perpendicular to the velocity, so the carrier's period barely changes).
+        // True while still pushing.
+        private bool PushAway(Vessel sat, double now)
+        {
+            if (!_rcsPushing) return false;
+            Vector3d away = (_carrier.CoMD - sat.CoMD).normalized;
+            double speed = Vector3d.Dot(_carrier.obt_velocity - sat.obt_velocity, away);
+            if (double.IsNaN(_rcsStartSpeed)) _rcsStartSpeed = speed;
+
+            // Make sure the push goes the right way: if the carrier is closing in, flip it.
+            if (!_rcsChecked && now - _rcsStart >= RcsCheckAfter)
+            {
+                _rcsChecked = true;
+                if (speed < _rcsStartSpeed)
+                {
+                    _rcsSign = -_rcsSign;
+                    Log("RCS pushed the wrong way: reversing it.");
+                }
+            }
+
+            if (speed >= RcsTargetSpeed || now - _rcsStart >= RcsPushSeconds)
+            {
+                StopRcs();
+                Log($"RCS push done: separating at {speed:F2} m/s.");
+                return false;
+            }
+
+            // ModuleRCS translates along ReferenceTransform.rotation * (X, Z, Y).
+            Vector3 local = _carrier.ReferenceTransform.InverseTransformDirection((Vector3)away) * _rcsSign;
+            _translate = new Vector3(local.x, local.z, local.y);
+            Status = $"RCS push away from the satellite: {speed:F2} m/s";
+            return true;
+        }
+
+        private void StopRcs()
+        {
+            if (!_rcsPushing) return;
+            _rcsPushing = false;
+            _translate = Vector3.zero;
+            if (_carrier == null) { _rcsAttached = false; return; }  // scene being destroyed
+            if (_rcsAttached) { _carrier.OnFlyByWire -= Translate; _rcsAttached = false; }
+            _carrier.ActionGroups.SetGroup(KSPActionGroup.RCS, _rcsWasOn);
         }
 
         private bool AdvanceClear(int k, double now)
         {
             if (_carrier.packed) { Status = "Waiting for physics"; return false; }
-            var sat = _satelliteParts[k].vessel;
+            var sat = SatelliteVessel(k);
             if (sat == null || sat == _carrier) { Fail($"{Sat(k)} did not separate."); return false; }
 
+            if (PushAway(sat, now)) return false;
             if (_clearMode != null && now - _clearStart >= ClearDelay)
             {
                 _carrier.ActionGroups.SetGroup(KSPActionGroup.SAS, true);
@@ -595,6 +744,7 @@ namespace RelayOrbiter.Plugin
 
         private void Stop()
         {
+            StopRcs();
             RestoreRanges();
             _executor?.Finish();
             if (TimeWarp.CurrentRateIndex > 0) TimeWarp.SetRate(0, true, false);
@@ -608,7 +758,7 @@ namespace RelayOrbiter.Plugin
             orbit.unload = _savedUnload;
         }
 
-        private string Sat(int k) => $"SAT-{k + 1} ({_names[k]})";
+        private string Sat(int k) => _satelliteNames != null ? $"SAT-{k + 1} ({_names[k]})" : $"SAT-{k + 1}";
 
         private string Describe(SequenceStep s) => s.Kind switch
         {
