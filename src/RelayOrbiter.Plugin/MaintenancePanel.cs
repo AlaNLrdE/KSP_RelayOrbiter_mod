@@ -11,7 +11,7 @@ namespace RelayOrbiter.Plugin
     // Flight-only panel: find the active satellite's constellation (suggested from
     // the names, confirmed by the player), show how far each satellite is from its
     // slot, and put the active one, or all of them, back with MaintenanceRunner.
-    internal sealed class MaintenancePanel
+    internal sealed partial class MaintenancePanel
     {
         private const float LabelW = 230f;
         private const int   NameChars = 30;
@@ -28,6 +28,7 @@ namespace RelayOrbiter.Plugin
         private int  _slots = 3;
         private uint _referenceId;                                // 0: best fit
         private int  _minOrbits = 1;
+        private bool _matchPlanes = true;  // different planes drift apart in places: match them by default
         private bool _customAltitude;                             // final altitude typed in by the player
         private string _customKm = "";
         private MaintenanceRunner? _runner;
@@ -82,6 +83,9 @@ namespace RelayOrbiter.Plugin
 
             var candidates = Candidates(vessel);
             if (_forVessel != vessel.persistentId) Suggest(vessel, candidates);
+
+            _byPlane = GUILayout.Toolbar(_byPlane ? 1 : 0, new[] { "Group by name", "Group by plane" }) == 1;
+            if (_byPlane) { DrawPlaneGroup(body, vessel, candidates); return; }
 
             // ── The constellation ──
             GUILayout.Label("Constellation", _header);
@@ -150,6 +154,15 @@ namespace RelayOrbiter.Plugin
             _minOrbits = Mathf.Clamp(_minOrbits, 1, StationKeeping.MaxPhasingOrbits);
             GUILayout.Label("(more: slower, less Δv)");
             GUILayout.EndHorizontal();
+            _matchPlanes = GUILayout.Toggle(_matchPlanes, "Match the orbital planes too (plane change first)");
+            if (_matchPlanes)
+            {
+                var plane = CommonPlane(members, reference, null);
+                Row("Common plane", (reference.HasValue ? "the reference's" : "mean of the members") +
+                                    $": i {plane.InclinationDeg:F2}°, Ω {plane.LanDeg:F2}°");
+                if (vessel.VesselValues.AutopilotSkill.value < 3)
+                    Warn("This satellite has no SAS maneuver mode (level 3): plane changes need it on every satellite that turns.");
+            }
 
             DrawActive(body, vessel, members, active, reference, fit!, targetSma, targetPeriod, now);
             DrawWhole(body, members, reference, now);
@@ -174,12 +187,22 @@ namespace RelayOrbiter.Plugin
             bool transferNeeded = StationKeeping.NeedsTransfer(o.ApR, o.PeR, targetSma);
             bool periodOk = PeriodOk(o, targetSma, targetPeriod);
             bool phaseOk = StationKeeping.PhaseOk(error);
+            double planeOff = _matchPlanes ? PlaneOff(vessel, CommonPlane(members, reference, active)) : 0.0;
+            bool planeOk = planeOff < PlaneToleranceDeg;
+            if (_matchPlanes)
+                Row("Off the common plane", $"{planeOff:F2}°", planeOk ? _ok : _warn);
             Row("Off its slot", $"{error:+0.00;-0.00}°", phaseOk ? _ok : _warn);
             Row("Period", $"{o.period - targetPeriod:+0.0;-0.0} s from the target " +
                           $"({StationKeeping.DriftDegPerOrbit(o.period, targetPeriod):+0.000;-0.000}°/orbit)",
                 periodOk ? _ok : _warn);
 
             double dv = 0.0, time = 0.0;
+            if (!planeOk)
+            {
+                double planeDv = PlaneGrouping.PlaneChangeDv(o.orbitalSpeed, planeOff);
+                Row("Plane change", Ms(planeDv));
+                dv += planeDv;
+            }
             if (transferNeeded)
             {
                 Row("Transfer to the target", Ms(transfer.TotalDv));
@@ -206,7 +229,7 @@ namespace RelayOrbiter.Plugin
                 dv += Math.Abs(trim);
             }
 
-            if (!transferNeeded && phaseOk && periodOk)
+            if (!transferNeeded && phaseOk && periodOk && planeOk)
             {
                 GUILayout.Label("In its slot, on the target period: nothing to correct.", _ok);
                 return;
@@ -219,7 +242,8 @@ namespace RelayOrbiter.Plugin
 
             if (GUILayout.Button("Correct this satellite"))
             {
-                var state = Start(body, members, fit, now, targetSma, targetPeriod, reference);
+                var state = Start(body, members, fit, now, targetSma, targetPeriod, reference,
+                                  CommonPlane(members, reference, active));
                 for (int i = 0; i < members.Count; ++i)
                     if (i != active) state.Stage[i] = CorrectionStage.Done;
                 _runner = new MaintenanceRunner(state, false, _transfer, _phasing, _planner, _formatTime);
@@ -236,14 +260,23 @@ namespace RelayOrbiter.Plugin
             double targetSma = TargetSma(body, members, reference, -1);
             double targetPeriod = _mechanics.OrbitalPeriod(targetSma, mu);
             var fit = StationKeeping.Fit(members.Select(v => MeanLongitude.At(v.orbit, now)).ToList(), _slots, reference);
+            var plane = CommonPlane(members, reference, null);
             var off = Enumerable.Range(0, members.Count)
                 .Where(i => i != reference &&
                             (!StationKeeping.PhaseOk(fit.ErrorsDeg[i]) ||
+                             _matchPlanes && PlaneOff(members[i], plane) >= PlaneToleranceDeg ||
                              StationKeeping.NeedsTransfer(members[i].orbit.ApR, members[i].orbit.PeR, targetSma) ||
                              !PeriodOk(members[i].orbit, targetSma, targetPeriod)))
                 .ToList();
             Row("Target orbit", $"{Km(targetSma - body.Radius)}, period {_formatTime(targetPeriod)}");
             Row("Largest slot error", $"{fit.ErrorsDeg.Max(e => Math.Abs(e)):F2}°");
+            if (_matchPlanes)
+            {
+                Row("Largest plane difference", $"{members.Max(v => PlaneOff(v, plane)):F2}°");
+                Row("Plane changes (Δv)", Ms(members.Sum(v => PlaneOff(v, plane) < PlaneToleranceDeg ? 0.0
+                                            : PlaneGrouping.PlaneChangeDv(v.orbit.orbitalSpeed, PlaneOff(v, plane)))) +
+                                          " in all");
+            }
             if (off.Count == 0)
             {
                 GUILayout.Label("Every satellite is in its slot, on the target period: nothing to correct.", _ok);
@@ -256,7 +289,7 @@ namespace RelayOrbiter.Plugin
                             "says the constellation is corrected.", _warn);
             if (GUILayout.Button("Correct the whole constellation"))
             {
-                var state = Start(body, members, fit, now, targetSma, targetPeriod, reference);
+                var state = Start(body, members, fit, now, targetSma, targetPeriod, reference, plane);
                 for (int i = 0; i < members.Count; ++i)
                     if (!off.Contains(i)) state.Stage[i] = CorrectionStage.Done;
                 _runner = new MaintenanceRunner(state, false, _transfer, _phasing, _planner, _formatTime);
@@ -264,9 +297,27 @@ namespace RelayOrbiter.Plugin
         }
 
         private MaintenanceState Start(Body body, List<Vessel> members, SlotFit fit, double now, double targetSma,
-                                       double targetPeriod, int? reference) =>
+                                       double targetPeriod, int? reference, OrbitPlane plane) =>
             MaintenanceState.Start(members.Select(v => v.persistentId).ToList(), fit, now, targetSma, targetPeriod,
-                                   reference, _minOrbits, PhasingPlanner.MinRadius(body), MaxRadius(body));
+                                   reference, _minOrbits, PhasingPlanner.MinRadius(body), MaxRadius(body),
+                                   _matchPlanes ? plane : null);
+
+        // ── Planes ───────────────────────────────────────────────────────────
+
+        private const double PlaneToleranceDeg = 0.05;
+
+        private static OrbitPlane PlaneOf(Vessel v) => new OrbitPlane(v.orbit.inclination, v.orbit.LAN);
+
+        // The reference's plane, else the mean plane of the members (but `exclude`).
+        private static OrbitPlane CommonPlane(List<Vessel> members, int? reference, int? exclude)
+        {
+            if (reference.HasValue) return PlaneOf(members[reference.Value]);
+            var others = members.Where((_, i) => i != exclude).Select(PlaneOf).ToList();
+            return PlaneGrouping.MeanPlane(others.Count > 0 ? others : members.Select(PlaneOf).ToList());
+        }
+
+        private static double PlaneOff(Vessel v, OrbitPlane plane) =>
+            PlaneGrouping.RelativeInclinationDeg(PlaneOf(v), plane);
 
         // On the target period, or closer than a precise burn can trim.
         private bool PeriodOk(Orbit o, double targetSma, double targetPeriod) =>

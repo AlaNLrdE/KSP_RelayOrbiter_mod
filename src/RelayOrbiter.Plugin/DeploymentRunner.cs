@@ -463,10 +463,7 @@ namespace RelayOrbiter.Plugin
             if (_satelliteNames == null || k < 0) return;
             var sat = SatelliteVessel(k);
             if (sat == null || sat == _carrier) return;
-            string old = sat.vesselName;
-            sat.vesselName = _satelliteNames[k];
-            sat.vesselType = VesselType.Relay;
-            Log($"Renamed {old} to {sat.vesselName} (relay).");
+            VesselRename.Apply(sat, _satelliteNames[k]);
         }
 
         // ── Getting clear of a released satellite ────────────────────────────
