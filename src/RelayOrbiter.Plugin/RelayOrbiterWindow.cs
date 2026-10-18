@@ -39,6 +39,8 @@ namespace RelayOrbiter.Plugin
         private float   _bodyTop = 200f;           // y of the tab content inside the window (last repaint)
         private const float MinBodyHeight = 200f;  // the content may always use this much
         private const float BottomMargin  = 20f;   // px kept free below the window
+        private const float WindowPadding = 20f;   // the skin's window padding, left and right
+        private const float ScrollBarWidth = 16f;  // the skin's vertical scroll bar and its margin
 
         private GUIStyle? _ok, _warn, _header;
 
@@ -132,7 +134,9 @@ namespace RelayOrbiter.Plugin
             float height = Mathf.Min(_contentHeight + 4f, maxHeight);
             _scroll = GUILayout.BeginScrollView(_scroll, false, false, GUIStyle.none, GUI.skin.verticalScrollbar,
                                                 GUILayout.Height(height));
-            GUILayout.BeginVertical();
+            // As wide as the view (less the scroll bar), so long lines wrap instead of
+            // running off the right edge.
+            GUILayout.BeginVertical(GUILayout.Width(Width - WindowPadding - ScrollBarWidth));
             if (_tab == 3)
                 _maintenance.Draw(current);
             else if (_tab == 1 && body != current)

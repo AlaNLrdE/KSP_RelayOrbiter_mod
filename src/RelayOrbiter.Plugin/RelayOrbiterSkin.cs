@@ -68,6 +68,7 @@ namespace RelayOrbiter.Plugin
             s.textField.padding = new RectOffset(5, 5, 3, 3);
 
             s.toggle.margin = new RectOffset(2, 2, 3, 3);
+            s.toggle.wordWrap = true;  // long member lines wrap instead of running under the scroll bar
 
             // Scroll bars in the same flat style.
             s.verticalScrollbar.normal.background      = Tex(Field, ControlEdge);
