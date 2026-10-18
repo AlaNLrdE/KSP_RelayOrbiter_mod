@@ -19,6 +19,7 @@ namespace RelayOrbiter.Plugin
         private const double ClearDelay    = 2.0;   // s after release before the carrier starts turning
         private const double OrientSasWait = 10.0;  // s for SAS to accept the orientation mode (just out of warp)
         private const double ReleaseSettle = 1.0;     // s of physics before a release
+        private const double SeparationTimeout = 5.0; // s for a released satellite to become its own vessel
         private const double MinNodeLead   = 60.0;  // s: never place a transfer node closer than this
         // KSP unloads orbiting vessels 2.5 km from the active one; switching back to an
         // unloaded carrier reloads the scene and ends the run. Keep it loaded meanwhile.
@@ -636,9 +637,24 @@ namespace RelayOrbiter.Plugin
         {
             if (_carrier.packed) { Status = "Waiting for physics"; return false; }
             var sat = SatelliteVessel(k);
-            if (sat == null || sat == _carrier) { Fail($"{Sat(k)} did not separate."); return false; }
+            if (sat == null || sat == _carrier)
+            {
+                // The split into two vessels can take a few physics frames (docking ports,
+                // a carrier that just left time warp): wait for it before calling it a failure.
+                if (now - _clearStart < SeparationTimeout) { Status = $"Waiting for {Sat(k)} to separate"; return false; }
+                Fail($"{Sat(k)} did not separate.");
+                return false;
+            }
 
             if (PushAway(sat, now)) return false;
+            if (_clearMode == null && now - _clearStart >= ClearDelay)
+            {
+                // SAS may not have been ready when the step began: pick the mode now.
+                var mode = _orientMode == VesselAutopilot.AutopilotMode.Normal
+                    ? VesselAutopilot.AutopilotMode.Prograde : VesselAutopilot.AutopilotMode.Normal;
+                _carrier.ActionGroups.SetGroup(KSPActionGroup.SAS, true);
+                if (_carrier.Autopilot.CanSetMode(mode)) _clearMode = mode;
+            }
             if (_clearMode != null && now - _clearStart >= ClearDelay)
             {
                 _carrier.ActionGroups.SetGroup(KSPActionGroup.SAS, true);
