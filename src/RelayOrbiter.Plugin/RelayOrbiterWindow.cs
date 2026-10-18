@@ -84,7 +84,7 @@ namespace RelayOrbiter.Plugin
             var option = DrawAltitudeSelector(body);
             GUILayout.Space(6f);
 
-            if (_automation.IsRunning) _tab = 2;
+            if (_automation.IsRunning || _automation.IsLaunching) _tab = 2;
             _tab = GUILayout.Toolbar(_tab, new[] { "Results", "Maneuvers", "Automation" });
 
             if (_tab == 1)
@@ -108,7 +108,7 @@ namespace RelayOrbiter.Plugin
         private void DrawSatelliteCount()
         {
             bool wasEnabled = GUI.enabled;
-            GUI.enabled = wasEnabled && !_automation.IsRunning;
+            GUI.enabled = wasEnabled && !_automation.IsRunning && !_automation.IsLaunching;
             GUILayout.BeginHorizontal();
             GUILayout.Label("Satellites", _header, GUILayout.Width(80f));
             if (GUILayout.Button("−", GUILayout.Width(24f))) _settings.Satellites--;
@@ -275,11 +275,12 @@ namespace RelayOrbiter.Plugin
         private static string Ms(double v) =>
             v.ToString("N1", CultureInfo.InvariantCulture) + " m/s";
 
+        // Shared with every panel, from the skin.
         private void CreateStyles()
         {
-            _ok     = new GUIStyle(GUI.skin.label) { normal = { textColor = new Color(0.55f, 0.95f, 0.55f) } };
-            _warn   = new GUIStyle(GUI.skin.label) { normal = { textColor = new Color(1.00f, 0.75f, 0.30f) }, wordWrap = true };
-            _header = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold };
+            _ok     = RelayOrbiterSkin.Ok;
+            _warn   = RelayOrbiterSkin.Warn;
+            _header = RelayOrbiterSkin.Header;
         }
     }
 }

@@ -41,6 +41,7 @@ namespace RelayOrbiter.Plugin
         private Vector3 _clearFrom;
         private VesselAutopilot.AutopilotMode? _clearMode;
         private double _clearStart;
+        private double _clearFromDistance = double.NaN;  // satellite distance right after release
         private readonly IDeploymentPlanner _planner;
         private readonly Func<double, string> _formatTime;
 
@@ -213,7 +214,8 @@ namespace RelayOrbiter.Plugin
 
                 case StepKind.ExecuteNode:
                     _executor = _skipExecute ? null
-                        : new NodeExecutor(FlightGlobals.ActiveVessel, _formatTime, _nextNeedsManeuverMode);
+                        : new NodeExecutor(FlightGlobals.ActiveVessel, _formatTime, _nextNeedsManeuverMode,
+                                           FlightGlobals.ActiveVessel == _carrier ? SatellitesOnBoard() : null);
                     _skipExecute = false;
                     _nextNeedsManeuverMode = false;
                     break;
@@ -313,7 +315,8 @@ namespace RelayOrbiter.Plugin
             _orienting = axis != Vector3.zero && ap.CanSetMode(mode);
             if (!_orienting)
             {
-                Log($"Can't point {mode} (SAS level too low?): releasing {Sat(k)} without orienting.");
+                Log($"Can't point {mode}: releasing {Sat(k)} without orienting " +
+                    $"({VesselParts.ControlReport(_carrier)}).");
                 return;
             }
             _carrier.ActionGroups.SetGroup(KSPActionGroup.SAS, true);
@@ -389,6 +392,7 @@ namespace RelayOrbiter.Plugin
             _until = now + timeout;
             _clearStart = now;
             _clearFrom = _carrier.ReferenceTransform.up;
+            _clearFromDistance = double.NaN;
             // Turn 90°: from normal (axial mounts) to prograde, or from prograde (radial) to normal.
             var mode = _orientMode == VesselAutopilot.AutopilotMode.Normal
                 ? VesselAutopilot.AutopilotMode.Prograde
@@ -408,20 +412,25 @@ namespace RelayOrbiter.Plugin
                 if (_carrier.Autopilot.Mode != _clearMode.Value) _carrier.Autopilot.SetMode(_clearMode.Value);
             }
             double turned = Vector3.Angle(_carrier.ReferenceTransform.up, _clearFrom);
-            double distance = (sat.CoMD - _carrier.CoMD).magnitude;
+            // How far the satellite moved away since the release: the distance between the
+            // centres of mass is large from the start on a long vessel.
+            double between = (sat.CoMD - _carrier.CoMD).magnitude;
+            if (double.IsNaN(_clearFromDistance)) _clearFromDistance = between;
+            double distance = between - _clearFromDistance;
             bool turnedEnough = _clearMode == null || turned >= MinTurnDeg;
 
             if (turnedEnough && distance >= MinClearance)
             {
-                Log($"Clear of {Sat(k)}: carrier turned {turned:F0}°, satellite {distance:F1} m away.");
+                Log($"Clear of {Sat(k)}: carrier turned {turned:F0}°, satellite {distance:F1} m further away.");
                 return true;
             }
             if (now > _until)
             {
-                Log($"Clearing timed out (carrier turned {turned:F0}°, satellite {distance:F1} m away): switching anyway.");
+                Log($"Clearing timed out (carrier turned {turned:F0}°, satellite {distance:F1} m further away): " +
+                    "switching anyway.");
                 return true;
             }
-            Status = $"Getting clear: carrier turned {turned:F0}°, {Sat(k)} {distance:F1} m away";
+            Status = $"Getting clear: carrier turned {turned:F0}°, {Sat(k)} {distance:F1} m further away";
             return false;
         }
 
@@ -480,6 +489,19 @@ namespace RelayOrbiter.Plugin
                     break;
                 }
             }
+        }
+
+        // Parts the carrier must never stage away: the satellites not released yet,
+        // with their separators.
+        private ISet<uint> SatellitesOnBoard()
+        {
+            var parts = new HashSet<uint>();
+            for (int k = _lastReleased + 1; k < _separators.Length; ++k)
+            {
+                parts.Add(_separators[k]);
+                parts.UnionWith(_satellitePartIds[k]);
+            }
+            return parts;
         }
 
         private void Skip(string why)

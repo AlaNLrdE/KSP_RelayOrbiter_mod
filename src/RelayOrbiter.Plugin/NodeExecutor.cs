@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
+using KSP.UI.Screens;
 using RelayOrbiter.Core;
 using UnityEngine;
 
@@ -12,6 +15,7 @@ namespace RelayOrbiter.Plugin
 
         private const double AlignTimeout = 60.0;  // s allowed to point before giving up
         private const double FlameoutGrace = 2.0;  // s without thrust before giving up
+        private const double SasWait       = 30.0; // s to wait for SAS (just switched, panels charging)
 
         private readonly Vessel _vessel;
         private readonly Func<double, string> _formatTime;
@@ -20,18 +24,24 @@ namespace RelayOrbiter.Plugin
         private bool _burning, _attached, _tail, _thrusted;
         private readonly Warp _warp = new Warp();
         private Vector3d _direction;  // burn direction when ignition started
-        private double _misalignedSince = double.NaN, _noThrustSince = double.NaN;
+        private double _misalignedSince = double.NaN, _noThrustSince = double.NaN, _noSasSince = double.NaN;
         private float _throttle;
 
         private readonly bool _maneuverModeRequired;
+        private readonly ISet<uint>? _protectedParts;  // null: never stage
+        private int _staged;
 
         // maneuverModeRequired: the burn is not purely prograde/retrograde (plane change),
         // so the prograde/retrograde SAS fallback would point the wrong way.
-        public NodeExecutor(Vessel vessel, Func<double, string> formatTime, bool maneuverModeRequired = false)
+        // protectedParts: when set, a spent stage may be staged away, as long as the next
+        // stage holds none of these parts (the satellites still on board).
+        public NodeExecutor(Vessel vessel, Func<double, string> formatTime, bool maneuverModeRequired = false,
+                            ISet<uint>? protectedParts = null)
         {
             _vessel = vessel;
             _formatTime = formatTime;
             _maneuverModeRequired = maneuverModeRequired;
+            _protectedParts = protectedParts;
         }
 
         public string Status { get; private set; } = "";
@@ -57,13 +67,35 @@ namespace RelayOrbiter.Plugin
             double mass = _vessel.GetTotalMass();
 
             if (!_tail && !PointAt(node))
-                return Fail(_maneuverModeRequired
-                    ? "This burn needs SAS maneuver mode (probe core or pilot with SAS level 3)."
-                    : "The vessel can't point along the burn: it needs SAS (a probe core or pilot).");
+            {
+                // A vessel just switched to, or short of power, may get SAS back shortly.
+                if (double.IsNaN(_noSasSince)) _noSasSince = now;
+                _throttle = 0f;
+                if (now - _noSasSince < SasWait)
+                {
+                    Status = "Waiting for SAS: " + VesselParts.ControlReport(_vessel);
+                    return Result.Running;
+                }
+                Debug.Log($"[RelayOrbiter] {_vessel.vesselName} can't point: {VesselParts.ControlReport(_vessel)}");
+                return Fail((_maneuverModeRequired
+                    ? "This burn needs SAS maneuver mode (SAS level 3)"
+                    : "The vessel can't point along the burn") +
+                    $": {VesselParts.LikelyControlProblem(_vessel)}.");
+            }
+            _noSasSince = double.NaN;
 
             if (!_burning)
             {
-                if (thrust <= 0.0) return Fail("The vessel has no running engine with fuel.");
+                if (thrust <= 0.0)
+                {
+                    // A spent stage before the burn: stage it away (after a short grace,
+                    // so a stage just activated has time to ignite).
+                    if (double.IsNaN(_noThrustSince)) _noThrustSince = now;
+                    else if (now - _noThrustSince > FlameoutGrace) return StageOrFail(now, dvLeft);
+                    Status = "Waiting for a running engine";
+                    return Result.Running;
+                }
+                _noThrustSince = double.NaN;
                 double duration = BurnTiming.Duration(node.DeltaV.magnitude, mass, thrust, isp) ?? 0.0;
                 double start = node.UT - duration / 2.0;
                 if (now < start)
@@ -104,7 +136,7 @@ namespace RelayOrbiter.Plugin
             if (thrust <= 0.0)
             {
                 if (double.IsNaN(_noThrustSince)) _noThrustSince = now;
-                else if (now - _noThrustSince > FlameoutGrace) return Fail($"Out of thrust with {dvLeft:F1} m/s left.");
+                else if (now - _noThrustSince > FlameoutGrace) return StageOrFail(now, dvLeft);
             }
             else _noThrustSince = double.NaN;
 
@@ -121,6 +153,32 @@ namespace RelayOrbiter.Plugin
             if (_throttle > 0f) _thrusted = true;
             Status = $"Burning: {dvLeft:F1} m/s left, {angle:F1}° off" + (_tail ? " (holding attitude)" : "");
             return Result.Running;
+        }
+
+        private Result StageOrFail(double now, double dvLeft)
+        {
+            if (_protectedParts == null) return Fail($"Out of thrust with {dvLeft:F1} m/s left.");
+            int next = StageManager.CurrentStage - 1;
+            var parts = _vessel.parts.Where(p => p.inverseStage == next).Select(p => p.flightID);
+            switch (StagingGuard.Decide(next, parts, _protectedParts, _staged))
+            {
+                case StagingDecision.Stage:
+                    _throttle = 0f;
+                    StageManager.ActivateNextStage();
+                    _staged++;
+                    _noThrustSince = now;  // give the new stage time to ignite
+                    Status = $"Staging: stage {next} (spent stage, {dvLeft:F1} m/s left)";
+                    Debug.Log($"[RelayOrbiter] {_vessel.vesselName}: out of thrust with {dvLeft:F1} m/s left, " +
+                              $"staged stage {next}.");
+                    return Result.Running;
+                case StagingDecision.WouldReleaseSatellite:
+                    return Fail($"Out of thrust with {dvLeft:F1} m/s left, and the next stage would release " +
+                                "a satellite: refuel the carrier or move the satellites to later stages.");
+                case StagingDecision.NothingLeft:
+                    return Fail($"Out of fuel with {dvLeft:F1} m/s left: no stage left.");
+                default:
+                    return Fail($"Still out of thrust after staging {_staged} times ({dvLeft:F1} m/s left).");
+            }
         }
 
         // Stop thrusting and give the controls back. Safe to call more than once.

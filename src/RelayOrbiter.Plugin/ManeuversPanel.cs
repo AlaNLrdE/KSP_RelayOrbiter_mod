@@ -261,11 +261,12 @@ namespace RelayOrbiter.Plugin
         private static string Ms(double v) =>
             v.ToString("N1", CultureInfo.InvariantCulture) + " m/s";
 
+        // Shared with every panel, from the skin.
         private void CreateStyles()
         {
-            _ok     = new GUIStyle(GUI.skin.label) { normal = { textColor = new Color(0.55f, 0.95f, 0.55f) }, wordWrap = true };
-            _warn   = new GUIStyle(GUI.skin.label) { normal = { textColor = new Color(1.00f, 0.75f, 0.30f) }, wordWrap = true };
-            _header = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold };
+            _ok     = RelayOrbiterSkin.Ok;
+            _warn   = RelayOrbiterSkin.Warn;
+            _header = RelayOrbiterSkin.Header;
         }
     }
 }

@@ -131,6 +131,26 @@ namespace RelayOrbiter.Plugin
             return BurnTiming.DeltaV(isp, wet, wet - System.Math.Max(0.0, fuel));
         }
 
+        // Why a vessel may not be able to use SAS, for status lines and KSP.log.
+        public static string ControlReport(Vessel vessel)
+        {
+            vessel.GetConnectedResourceTotals(PartResourceLibrary.ElectricityHashcode, out double ec, out double ecMax, true);
+            bool signal = vessel.Connection == null || vessel.Connection.IsConnected;
+            return $"control {vessel.CurrentControlLevel}, electric charge {ec:F0}/{ecMax:F0}, " +
+                   $"SAS level {vessel.VesselValues.AutopilotSkill.value}, CommNet {(signal ? "connected" : "no signal")}";
+        }
+
+        public static string LikelyControlProblem(Vessel vessel)
+        {
+            vessel.GetConnectedResourceTotals(PartResourceLibrary.ElectricityHashcode, out double ec, out _, true);
+            if (ec < 0.5) return "it has no electric charge (batteries empty or dropped with a stage, panels in shadow)";
+            if (vessel.CurrentControlLevel == Vessel.ControlLevel.NONE)
+                return "it has no control (no powered probe core or crew, or no CommNet signal)";
+            if (vessel.Connection != null && !vessel.Connection.IsConnected)
+                return "it has no CommNet signal";
+            return "its SAS level is too low for this burn";
+        }
+
         private static bool IsFuel(PartResource r) =>
             r.resourceName != "ElectricCharge" && r.info.resourceTransferMode != ResourceTransferMode.NONE;
 

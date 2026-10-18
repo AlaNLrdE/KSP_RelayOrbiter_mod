@@ -26,6 +26,9 @@ namespace RelayOrbiter.Plugin
         private readonly TransferPlanner          _transfer;
         private readonly Func<double, string>     _formatTime;
         private string _inclinationText = "";
+        private MechJebAscent? _launch;           // MechJeb is flying the ascent
+        private bool _continueAfterLaunch = true;
+        private bool _autoStart;                  // in orbit after a launch: start on its own
         private bool _inclinationValid = true;
 
         private readonly List<uint> _order = new List<uint>();  // separator flight ids
@@ -50,14 +53,26 @@ namespace RelayOrbiter.Plugin
 
         public bool IsRunning => _runner != null && _runner.State == DeploymentRunner.RunState.Running;
 
-        public void Tick()  => _runner?.Tick();
-        public void Abort() => _runner?.Abort();
+        public bool IsLaunching => _launch != null;
+
+        public void Tick()
+        {
+            _runner?.Tick();
+            TickLaunch();
+        }
+
+        public void Abort()
+        {
+            _runner?.Abort();
+            StopLaunch("Launch aborted.");
+        }
 
         // target: the window's valid target altitude, if any; targetProblem: why it isn't valid.
         public void Draw(Body selected, double? target, string? targetProblem)
         {
             if (_ok == null) CreateStyles();
             if (_runner != null) { DrawRunner(); return; }
+            if (_launch != null) { DrawLaunching(); return; }  // first, so Abort is always there
 
             var vessel = FlightGlobals.ActiveVessel;
             if (vessel == null) { Warn("No active vessel."); return; }
@@ -92,7 +107,11 @@ namespace RelayOrbiter.Plugin
 
             var order = _order.Select(id => candidates.First(c => c.SeparatorId == id)).ToList();
             int n = _settings.Satellites;
-            var releases = tree.PlanReleases(order, n);
+            var situation = vessel.situation;
+            bool onGround = situation == Vessel.Situations.PRELAUNCH || situation == Vessel.Situations.LANDED ||
+                            situation == Vessel.Situations.SPLASHED;
+            // Before launch the carrier's engine is not staged yet.
+            var releases = tree.PlanReleases(order, n, requireActiveCarrierEngine: !onGround && _launch == null);
             if (!releases.IsValid)
             {
                 Warn(candidates.Count < n
@@ -102,6 +121,7 @@ namespace RelayOrbiter.Plugin
             }
 
             // The vessel's checks come after the satellites', so they show on the launch pad too.
+            if (onGround) { DrawLaunch(vessel, selected, target, targetProblem, n); return; }
             if (vessel.situation != Vessel.Situations.ORBITING) { Warn("Get into a stable orbit first."); return; }
             if (_altitudes.Validate(selected, orbit.ApA) != AltitudeStatus.Ok) { Warn("The apoapsis is not usable."); return; }
             var solver = vessel.patchedConicSolver;
@@ -229,7 +249,16 @@ namespace RelayOrbiter.Plugin
 
             bool wasEnabled = GUI.enabled;
             GUI.enabled = wasEnabled && problems.Count == 0;
-            if (GUILayout.Button("Start deployment") && !_startRequested)
+            // After a launch with "continue automatically", start as if Start was clicked
+            // (in the Repaint pass, so the next Layout pass sees the new state).
+            bool autoStart = _autoStart && Event.current.type == EventType.Repaint;
+            if (autoStart)
+            {
+                _autoStart = false;
+                if (problems.Count > 0)
+                    Debug.Log("[RelayOrbiter] In orbit, but not continuing on its own: " + string.Join(" ", problems));
+            }
+            if ((GUILayout.Button("Start deployment") || autoStart && problems.Count == 0) && !_startRequested)
             {
                 if (_topUp && transfers.Count > 0)
                 {
@@ -254,6 +283,84 @@ namespace RelayOrbiter.Plugin
             GUILayout.Label("While it runs: don't touch the controls and don't switch vessels or leave the " +
                             $"flight scene; the mod switches to SAT-2 … SAT-{n} itself. Time warp is handled for you.",
                             _warn);
+        }
+
+        // ── Launch from the ground with MechJeb ──────────────────────────────
+
+        private void DrawLaunch(Vessel vessel, Body body, double? target, string? targetProblem, int n)
+        {
+            GUILayout.Label("Launch to orbit (MechJeb)", _header);
+            if (!target.HasValue)
+            {
+                Warn((targetProblem ?? "Choose a valid target altitude above.") +
+                     " Pick another one above (Synchronous, At a moon, Midpoint or Custom).");
+                return;
+            }
+            if (!MechJebAscent.Installed)
+            {
+                Warn("MechJeb 2 is not installed: launch by hand, then come back to this tab in orbit.");
+                return;
+            }
+            var mechJeb = MechJebAscent.For(vessel);
+            if (mechJeb == null)
+            {
+                Warn("This vessel has no MechJeb: add a MechJeb part (or install MechJebForAll), or launch by hand.");
+                return;
+            }
+
+            double launchAlt = LaunchPlanner.LaunchAltitude(body, target.Value);
+            DrawInclination(Math.Abs(vessel.latitude));
+            double inclination = _settings.ChangeInclination ? _settings.InclinationDeg : 0.0;
+            Row("Launch to", $"{Km(launchAlt)} circular, inclination {inclination:F1}°" +
+                             (inclination < Math.Abs(vessel.latitude) ? " (or the launch site's latitude)" : ""));
+            Row("Then", (launchAlt < target.Value - 1.0 ? $"transfer to {Km(target.Value)}, " : "") +
+                        $"deploy {n} satellites, {Resonance.SpacingDeg(n):F0}° apart");
+            _continueAfterLaunch = GUILayout.Toggle(_continueAfterLaunch, " Continue with the deployment once in orbit");
+
+            bool wasEnabled = GUI.enabled;
+            GUI.enabled = wasEnabled && (!_settings.ChangeInclination || _inclinationValid);
+            if (GUILayout.Button("Launch with MechJeb"))
+            {
+                mechJeb.Configure(launchAlt, inclination);
+                mechJeb.Engage(this);
+                _launch = mechJeb;
+                Debug.Log($"[RelayOrbiter] Launching with MechJeb to {launchAlt / 1000.0:F1} km, " +
+                          $"inclination {inclination:F1}°; continue afterwards: {_continueAfterLaunch}.");
+            }
+            GUI.enabled = wasEnabled;
+            GUILayout.Label("MechJeb flies the ascent and stages; watch it like any MechJeb launch.");
+        }
+
+        private void DrawLaunching()
+        {
+            GUILayout.Label("Launching with MechJeb", _header);
+            GUILayout.Label(_launch!.Status, _ok);
+            if (_continueAfterLaunch) GUILayout.Label("The deployment starts on its own once in orbit.");
+            if (GUILayout.Button("Abort launch")) StopLaunch("Launch aborted by the player.");
+        }
+
+        private void TickLaunch()
+        {
+            if (_launch == null) return;
+            var vessel = FlightGlobals.ActiveVessel;
+            if (vessel == null) { StopLaunch("Launch stopped: no active vessel."); return; }
+            // MechJeb disengages itself once the orbit is circularized.
+            if (vessel.situation == Vessel.Situations.ORBITING && !_launch.Enabled)
+            {
+                _launch = null;
+                _autoStart = _continueAfterLaunch;
+                Debug.Log($"[RelayOrbiter] In orbit after the launch: {vessel.orbit.ApA / 1000.0:F1} x " +
+                          $"{vessel.orbit.PeA / 1000.0:F1} km, {vessel.orbit.inclination:F2}°.");
+            }
+        }
+
+        private void StopLaunch(string why)
+        {
+            if (_launch == null) return;
+            _launch.Disengage(this);
+            _launch = null;
+            _autoStart = false;
+            Debug.Log("[RelayOrbiter] " + why);
         }
 
         private void DrawInclination(double current)
@@ -338,11 +445,12 @@ namespace RelayOrbiter.Plugin
 
         private static string Ms(double v) => v.ToString("N1", CultureInfo.InvariantCulture) + " m/s";
 
+        // Shared with every panel, from the skin.
         private void CreateStyles()
         {
-            _ok     = new GUIStyle(GUI.skin.label) { normal = { textColor = new Color(0.55f, 0.95f, 0.55f) }, wordWrap = true };
-            _warn   = new GUIStyle(GUI.skin.label) { normal = { textColor = new Color(1.00f, 0.75f, 0.30f) }, wordWrap = true };
-            _header = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold };
+            _ok     = RelayOrbiterSkin.Ok;
+            _warn   = RelayOrbiterSkin.Warn;
+            _header = RelayOrbiterSkin.Header;
         }
     }
 }
