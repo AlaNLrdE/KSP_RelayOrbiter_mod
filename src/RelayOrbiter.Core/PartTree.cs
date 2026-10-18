@@ -40,7 +40,10 @@ namespace RelayOrbiter.Core
             return result;
         }
 
-        public ReleasePlan PlanReleases(IReadOnlyList<SatelliteCandidate> order, int satellites = Satellites)
+        // requireActiveCarrierEngine: false before launch, when the carrier's engine is
+        // not staged yet (its thrust is then estimated from all of its engines).
+        public ReleasePlan PlanReleases(IReadOnlyList<SatelliteCandidate> order, int satellites = Satellites,
+                                        bool requireActiveCarrierEngine = true)
         {
             if (order.Count != satellites)
                 return Fail($"Pick exactly {satellites} satellites ({order.Count} picked).");
@@ -65,10 +68,14 @@ namespace RelayOrbiter.Core
                 stats.Add(new SatelliteStats(order[k], Mass(detached), thrust, isp));
             }
 
-            var carrier = _parts.Where(p => !released.Contains(p.Id));
+            var carrier = _parts.Where(p => !released.Contains(p.Id)).ToList();
             var (carrierThrust, carrierIsp) = Propulsion(carrier.Where(p => p.EngineActive));
+            if (carrierThrust <= 0.0 && !requireActiveCarrierEngine)
+                (carrierThrust, carrierIsp) = Propulsion(carrier);
             if (carrierThrust <= 0.0)
-                return Fail("The carrier has no active engine: stage its engine first.");
+                return Fail(requireActiveCarrierEngine
+                    ? "The carrier has no active engine: stage its engine first."
+                    : "The carrier has no engine.");
 
             double massAfterFirst = _parts.Sum(p => p.Mass) - stats[0].Mass;
             return new ReleasePlan(null, stats, massAfterFirst, carrierThrust, carrierIsp);

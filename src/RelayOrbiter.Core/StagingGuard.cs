@@ -1,0 +1,31 @@
+using System.Collections.Generic;
+
+namespace RelayOrbiter.Core
+{
+    public enum StagingDecision
+    {
+        Stage,                  // safe: activate the next stage
+        NothingLeft,            // no stage left to activate
+        WouldReleaseSatellite,  // the next stage holds a satellite (or its separator)
+        TooManyStages,          // already staged MaxStagesPerBurn times in this burn
+    }
+
+    // Whether the carrier may stage during one of its burns (a spent stage), without
+    // ever releasing a satellite that is still on board.
+    public static class StagingGuard
+    {
+        public const int MaxStagesPerBurn = 4;
+
+        // nextStage: the stage number that would activate; nextStageParts: its parts;
+        // protectedParts: every part of the satellites still on board, separators included.
+        public static StagingDecision Decide(int nextStage, IEnumerable<uint> nextStageParts,
+                                             ISet<uint> protectedParts, int stagedThisBurn)
+        {
+            if (nextStage < 0) return StagingDecision.NothingLeft;
+            if (stagedThisBurn >= MaxStagesPerBurn) return StagingDecision.TooManyStages;
+            foreach (uint id in nextStageParts)
+                if (protectedParts.Contains(id)) return StagingDecision.WouldReleaseSatellite;
+            return StagingDecision.Stage;
+        }
+    }
+}
