@@ -23,6 +23,7 @@ comes back to the carrier.
    user_guide
    travel
    maintenance
+   shapes
    vessel_design
    troubleshooting
 

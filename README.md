@@ -36,6 +36,9 @@ Full documentation: **<https://alanlrde.github.io/KSP_RelayOrbiter_mod/>**
 - **CommNet check:** warns when the satellites won't see or reach each other.
 - **Constellation maintenance:** finds a constellation from the satellites' names and puts
   one satellite, or all of them in parallel, back in their slots with precise phasing burns.
+- **Constellation shapes:** Walker Delta and Star (one carrier per plane), Molniya,
+  Tundra, Draim's tetrahedron and Trojans of a moon, each satellite fitted to its slot
+  and moved there.
 - **Resume:** a deployment interrupted by a scene reload (or a quickload) can be resumed.
 - **RCS separation:** with RCS, the carrier pushes itself away from each released satellite.
 - **Works with planet packs:** bodies come from the running game (stock, Kopernicus,
