@@ -186,7 +186,6 @@ namespace RelayOrbiter.Plugin
                 var solver = vessel.patchedConicSolver;
                 if (solver == null) { Fail("Maneuver nodes are not available."); return; }
                 foreach (var n in solver.maneuverNodes.ToList()) n.RemoveSelf();
-                VesselParts.ActivateEngines(vessel);
                 var burn = Plan(i, vessel.orbit, now, commit: true);
                 if (State != RunState.Running) return;
                 if (burn == null) { AdvanceStage(i, now); _state.Current = -1; return; }
@@ -245,10 +244,10 @@ namespace RelayOrbiter.Plugin
                 {
                     if (!_state.MatchPlanes) return Skip(commit, "planes not matched.");
                     var n2 = TargetNormal(o, now);
-                    var n1 = Normal(o, now);
+                    var n1 = PlaneMatch.Normal(o, now);
                     double angle = Vector3d.Angle(n1, n2);
                     if (angle < PlaneToleranceDeg) return Skip(commit, $"{angle:F3}° from the common plane, no plane change.");
-                    double ut = NextPlaneCrossing(o, n2, now + MinNodeLead);
+                    double ut = PlaneMatch.NextCrossing(o, n2, now + MinNodeLead);
                     double speed = o.getOrbitalVelocityAtUT(ut).magnitude;
                     double rad = angle * Math.PI / 180.0;
                     double prograde = speed * (Math.Cos(rad) - 1.0), normal = speed * Math.Sin(rad);
@@ -344,67 +343,11 @@ namespace RelayOrbiter.Plugin
         // ── Helpers ──────────────────────────────────────────────────────────
 
         // ── Planes ───────────────────────────────────────────────────────────
-        // Normals are taken in the Orbit class's own frame (position × velocity), for
-        // the satellites and for the common plane alike, so only angles and signs of
-        // dot products are used: they don't depend on how that frame is oriented.
 
-        private static Vector3d Normal(Orbit o, double ut) =>
-            Vector3d.Cross(o.getRelativePositionAtUT(ut), o.getOrbitalVelocityAtUT(ut)).normalized;
+        private Vector3d TargetNormal(Orbit o, double ut) => PlaneMatch.TargetNormal(_state.Plane, o, ut);
 
-        // The common plane's normal: from a circular orbit in that plane.
-        private Vector3d TargetNormal(Orbit o, double ut)
-        {
-            var plane = new Orbit(_state.PlaneInclination, 0.0, o.semiMajorAxis, _state.PlaneLan, 0.0, 0.0, ut,
-                                  o.referenceBody);
-            return Normal(plane, ut);
-        }
-
-        // Next time after `from` the satellite crosses the common plane (the line of
-        // nodes between the two planes): where position · normal changes sign.
-        private static double NextPlaneCrossing(Orbit o, Vector3d n2, double from)
-        {
-            const int steps = 90;
-            double F(double t) => Vector3d.Dot(o.getRelativePositionAtUT(t), n2);
-            double dt = o.period / steps, t0 = from, f0 = F(t0);
-            for (int k = 1; k <= steps; ++k)
-            {
-                double t1 = from + k * dt, f1 = F(t1);
-                if (Math.Sign(f1) != Math.Sign(f0))
-                {
-                    for (int j = 0; j < 50; ++j)
-                    {
-                        double tm = (t0 + t1) / 2.0, fm = F(tm);
-                        if (Math.Sign(fm) == Math.Sign(f0)) { t0 = tm; f0 = fm; } else t1 = tm;
-                    }
-                    return (t0 + t1) / 2.0;
-                }
-                t0 = t1; f0 = f1;
-            }
-            return from;  // already in the plane: any time will do
-        }
-
-        // The normal component's sign depends on which node this is: check the orbit
-        // KSP predicts after the node, and flip the burn when it tilts the wrong way.
-        private void CheckPlaneChangeSign(PatchedConicSolver solver, ManeuverNode node, Burn burn)
-        {
-            double Off()
-            {
-                solver.UpdateFlightPlan();
-                var next = node.nextPatch;
-                return next == null ? double.NaN
-                    : PlaneGrouping.RelativeInclinationDeg(new OrbitPlane(next.inclination, next.LAN), _state.Plane);
-            }
-            double plus = Off();
-            node.OnGizmoUpdated(new Vector3d(0.0, -burn.Normal, burn.Dv), burn.UT);
-            double minus = Off();
-            if (double.IsNaN(minus) || plus <= minus)
-            {
-                node.OnGizmoUpdated(new Vector3d(0.0, burn.Normal, burn.Dv), burn.UT);
-                solver.UpdateFlightPlan();
-            }
-            Log($"Plane change: {Math.Min(plus, double.IsNaN(minus) ? plus : minus):F3}° from the common plane " +
-                $"after the node (normal +: {plus:F3}°, −: {minus:F3}°).");
-        }
+        private void CheckPlaneChangeSign(PatchedConicSolver solver, ManeuverNode node, Burn burn) =>
+            PlaneMatch.CheckSign(solver, node, burn.UT, burn.Dv, burn.Normal, _state.Plane, Log);
 
         // Too close to another satellite's phasing return to fly both.
         private bool ReturnClashes(int i, double ut)

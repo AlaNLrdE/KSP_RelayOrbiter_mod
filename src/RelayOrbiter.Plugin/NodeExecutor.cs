@@ -30,6 +30,11 @@ namespace RelayOrbiter.Plugin
         private double _misalignedSince = double.NaN, _noThrustSince = double.NaN, _noSasSince = double.NaN;
         private float _throttle;
 
+        // Before a burn, with no engine running: ignite the current stage's engines that
+        // are off (never a satellite's still on board). A player setting, on by default.
+        public static bool AutoActivateEngines = true;
+        private bool _activationTried;
+
         private readonly bool _maneuverModeRequired;
         private readonly ISet<uint>? _protectedParts;  // null: never stage
         private int _staged;
@@ -93,6 +98,19 @@ namespace RelayOrbiter.Plugin
             {
                 if (thrust <= 0.0)
                 {
+                    if (AutoActivateEngines && !_activationTried)
+                    {
+                        _activationTried = true;
+                        int n = ActivateStageEngines();
+                        if (n > 0)
+                        {
+                            Debug.Log($"[RelayOrbiter] {_vessel.vesselName}: no engine running, activated {n} " +
+                                      "engine(s) of the current stage.");
+                            _noThrustSince = now;  // give them time to ignite
+                            Status = "Activating the engines";
+                            return Result.Running;
+                        }
+                    }
                     // A spent stage before the burn: stage it away (after a short grace,
                     // so a stage just activated has time to ignite).
                     if (double.IsNaN(_noThrustSince)) _noThrustSince = now;
@@ -188,6 +206,31 @@ namespace RelayOrbiter.Plugin
                 default:
                     return Fail($"Still out of thrust after staging {_staged} times ({dvLeft:F1} m/s left).");
             }
+        }
+
+        // The engines of the current stage (already staged) that are off, outside the
+        // protected parts. A lone satellite (no protected parts) whose current stage has
+        // none gets the next stage's engines instead: only those, never all of them.
+        // Returns how many were activated.
+        private int ActivateStageEngines()
+        {
+            int stage = StageManager.CurrentStage;
+            var off = _vessel.FindPartModulesImplementing<ModuleEngines>()
+                .Where(e => e.isEnabled && !e.EngineIgnited && !e.flameout &&
+                            (_protectedParts == null || !_protectedParts.Contains(e.part.flightID)))
+                .ToList();
+            var current = off.Where(e => e.part.inverseStage >= stage).ToList();
+            if (current.Count == 0 && _protectedParts == null && off.Count > 0)
+            {
+                int next = off.Max(e => e.part.inverseStage);
+                current = off.Where(e => e.part.inverseStage == next).ToList();
+            }
+            foreach (var e in current) e.Activate();
+            if (current.Count > 0)
+                Debug.Log($"[RelayOrbiter] {_vessel.vesselName}: activated " +
+                          string.Join(", ", current.Select(e => $"{e.part.partInfo.title} (stage {e.part.inverseStage})")) +
+                          $"; current stage {stage}.");
+            return current.Count;
         }
 
         // Stop thrusting and give the controls back. Safe to call more than once.

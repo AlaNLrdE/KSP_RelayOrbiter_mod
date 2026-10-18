@@ -33,10 +33,13 @@ namespace RelayOrbiter.Plugin
         private readonly bool _extendPanels, _topUp;
         private readonly ParkingOrbit _parking;  // inner: release at apoapsis; outer: at periapsis
         private readonly TransferPlanner _transfer;
+        private readonly MoonTransferPlanner _moonPlanner = new MoonTransferPlanner(new OrbitalMechanics());
         private readonly double _goalRadius;          // target circular orbit radius
         private readonly double? _goalInclination;    // degrees; null = keep the current plane
         private bool _skipExecute;                    // the node step found nothing to do
         private bool _nextNeedsManeuverMode;          // the next node is a plane change
+        private readonly CelestialBody? _destination; // moon to travel to first; null: stay
+        private bool _nextPrecise;                    // the next node is a course correction
         private readonly string[]? _satelliteNames;   // null = keep the names they have
         private int _lastReleased = -1;
         private Vector3 _clearFrom;
@@ -89,6 +92,8 @@ namespace RelayOrbiter.Plugin
             _parking          = state.Parking;
             _goalRadius       = state.GoalRadius;
             _goalInclination  = state.GoalInclination;
+            _destination      = state.Destination == null ? null
+                              : FlightGlobals.Bodies.FirstOrDefault(b => b.bodyName == state.Destination);
             _planner          = planner;
             _transfer         = transfer;
             _formatTime       = formatTime;
@@ -166,7 +171,8 @@ namespace RelayOrbiter.Plugin
         private static bool IsCreateNode(StepKind k) =>
             k == StepKind.CreateParkingNode || k == StepKind.CreateCircularizeNode ||
             k == StepKind.CreateTransferNode || k == StepKind.CreateTargetCircularizeNode ||
-            k == StepKind.CreatePlaneChangeNode;
+            k == StepKind.CreatePlaneChangeNode || k == StepKind.CreateEjectionNode || k == StepKind.CreateMoonPlaneNode ||
+            k == StepKind.CreateCourseCorrectionNode || k == StepKind.CreateCaptureNode;
 
         public RunState State  { get; private set; } = RunState.Running;
         public string   Status { get; private set; } = "";
@@ -292,11 +298,31 @@ namespace RelayOrbiter.Plugin
 
                 case StepKind.ExecuteNode:
                     _executor = _skipExecute ? null
-                        : new NodeExecutor(FlightGlobals.ActiveVessel, _formatTime, _nextNeedsManeuverMode,
+                        : new NodeExecutor(FlightGlobals.ActiveVessel, _formatTime, _nextNeedsManeuverMode, precise: _nextPrecise,
+                                           protectedParts:
                                            FlightGlobals.ActiveVessel == _carrier ? SatellitesOnBoard() : null);
                     _skipExecute = false;
                     _nextNeedsManeuverMode = false;
+                    _nextPrecise = false;
                     break;
+
+                case StepKind.CreateMoonPlaneNode:
+                case StepKind.CreateEjectionNode:
+                case StepKind.CreateCourseCorrectionNode:
+                case StepKind.CreateCaptureNode:
+                    CreateMoonNode(s.Kind, now);
+                    break;
+
+                case StepKind.WarpToSoi:
+                {
+                    var o = _carrier.orbit;
+                    if (_destination == null || _carrier.mainBody == _destination) break;
+                    var patch = EncounterSearch.PatchAround(o, _destination);
+                    if (patch == null) { Fail($"No encounter with {_destination.bodyName} any more."); break; }
+                    _until = patch.StartUT + 10.0;
+                    _warp.Now();
+                    break;
+                }
             }
         }
 
@@ -347,12 +373,17 @@ namespace RelayOrbiter.Plugin
                 case StepKind.SwitchToSatellite:
                 case StepKind.SwitchToCarrier:
                     if (FlightGlobals.ActiveVessel == _target && !_target!.packed)
-                    {
-                        if (s.Kind == StepKind.SwitchToSatellite) VesselParts.ActivateEngines(_target);
-                        return true;
-                    }
+                        return true;  // its engine is activated (current stage only) by the node executor
                     if (now > _until) Fail($"Could not switch to {_target!.vesselName}.");
                     Status = $"Switching to {_target!.vesselName}";
+                    return false;
+
+                case StepKind.WarpToSoi:
+                    if (_destination == null || _carrier.mainBody == _destination)
+                        return TimeWarp.CurrentRateIndex == 0 || StopWarp();
+                    _warp.Towards(_until);
+                    Status = $"Coasting to {_destination.bodyName}: {_formatTime(Math.Max(0.0, _until - now))} to its SOI";
+                    if (now > _until + 600.0) Fail($"Did not enter {_destination.bodyName}'s SOI.");
                     return false;
 
                 case StepKind.ExecuteNode:
@@ -637,6 +668,143 @@ namespace RelayOrbiter.Plugin
             }
         }
 
+        // ── Travelling to a moon ─────────────────────────────────────────────
+
+        private const double CorrectionTolerance = 0.03;  // periapsis within 3%: no correction
+        private const double MoonPlaneTolerance  = 0.2;   // degrees from the moon's plane: close enough
+        private const double CorrectionDelay     = 600.0; // s after the ejection
+
+        private bool StopWarp()
+        {
+            TimeWarp.SetRate(0, true, false);
+            return false;
+        }
+
+        // Ejection at the next window, refined against KSP's prediction; a course
+        // correction when the encounter's periapsis is off; the capture burn.
+        private void CreateMoonNode(StepKind kind, double now)
+        {
+            var o = _carrier.orbit;
+            var solver = _carrier.patchedConicSolver;
+            if (FlightGlobals.ActiveVessel != _carrier || solver == null || _destination == null)
+            {
+                Fail("The carrier must be the active vessel, able to plan nodes, with a destination.");
+                return;
+            }
+            var moon = _destination;
+            double minPe = moon.Radius + Math.Max(moon.atmosphere ? moon.atmosphereDepth : 0.0, 10_000.0);
+            switch (kind)
+            {
+                case StepKind.CreateMoonPlaneNode:
+                {
+                    if (_carrier.mainBody == moon) { Skip($"Already around {moon.bodyName}."); return; }
+                    var plane = new OrbitPlane(moon.orbit.inclination, moon.orbit.LAN);
+                    double angle = PlaneMatch.AngleDeg(o, plane, now);
+                    if (angle < MoonPlaneTolerance)
+                    {
+                        Skip($"{angle:F2}° from {moon.bodyName}'s orbital plane: no plane change needed.");
+                        return;
+                    }
+                    double ut = PlaneMatch.NextCrossing(o, PlaneMatch.TargetNormal(plane, o, now), now + MinNodeLead);
+                    var (prograde, normal) = PlaneMatch.DeltaV(o.getOrbitalVelocityAtUT(ut).magnitude, angle);
+                    var node = solver.AddManeuverNode(ut);
+                    node.OnGizmoUpdated(new Vector3d(0.0, normal, prograde), ut);
+                    PlaneMatch.CheckSign(solver, node, ut, prograde, normal, plane, Log);
+                    _nextNeedsManeuverMode = true;
+                    Log($"Into {moon.bodyName}'s orbital plane (i {plane.InclinationDeg:F2}°, Ω {plane.LanDeg:F2}°): " +
+                        $"{angle:F2}°, {PlaneGrouping.PlaneChangeDv(o.getOrbitalVelocityAtUT(ut).magnitude, angle):F1} m/s.");
+                    break;
+                }
+                case StepKind.CreateEjectionNode:
+                {
+                    if (_carrier.mainBody == moon) { Skip($"Already around {moon.bodyName}."); return; }
+                    if (moon.referenceBody != o.referenceBody)
+                    {
+                        Fail($"{moon.bodyName} doesn't orbit {o.referenceBody.bodyName}.");
+                        return;
+                    }
+                    var plan = _moonPlanner.Plan(o.referenceBody.gravParameter, o.semiMajorAxis, moon.orbit.semiMajorAxis,
+                                                 moon.gravParameter, _goalRadius);
+                    double phase = MoonTransferPlanner.PhaseAngleDeg(MeanLongitude.At(o, now), MeanLongitude.At(moon.orbit, now));
+                    double wait = MoonTransferPlanner.WaitTime(phase, plan.PhaseAngleDeg, o.period, moon.orbit.period);
+                    double earliest = now + MinNodeLead + 300.0;  // room to point a long burn
+                    double ut0 = now + wait;
+                    while (ut0 < earliest) ut0 += MoonTransferPlanner.SynodicPeriod(o.period, moon.orbit.period);
+                    var node = solver.AddManeuverNode(ut0);
+                    var search = new EncounterSearch(solver, node, moon, _goalRadius, minPe);
+                    (double ut, double cost) best = (ut0, double.MaxValue);
+                    Vector3d bestDv = Vector3d.zero;
+                    // A little more than Hohmann gets there sooner and widens the window.
+                    foreach (double extra in new[] { 0.0, 0.005, 0.01, 0.02 })
+                    {
+                        var dv = new Vector3d(0.0, 0.0, plan.EjectionDv * (1.0 + extra));
+                        var r = search.BestTime(ut0, o.period / 8.0, dv, earliest);
+                        if (r.cost < best.cost) { best = r; bestDv = dv; }
+                    }
+                    if (best.cost >= 1e6)
+                    {
+                        node.RemoveSelf();
+                        Fail($"No encounter with {moon.bodyName} found near the window " +
+                             $"(phase {phase:F1}°, needed {plan.PhaseAngleDeg:F1}°).");
+                        return;
+                    }
+                    search.Evaluate(best.ut, bestDv);
+                    var patch = search.Patch;
+                    Log($"Transfer to {moon.bodyName}: window in {_formatTime(best.ut - now)} (phase now {phase:F1}°, " +
+                        $"needed {plan.PhaseAngleDeg:F1}°), {bestDv.z:F1} m/s prograde; predicted periapsis " +
+                        $"{(patch != null ? (patch.PeR - moon.Radius) / 1000.0 : double.NaN):F1} km, " +
+                        $"i {(patch?.inclination ?? double.NaN):F1}° ({search.Evaluations} predictions).");
+                    break;
+                }
+                case StepKind.CreateCourseCorrectionNode:
+                {
+                    if (_carrier.mainBody == moon) { Skip($"Already around {moon.bodyName}."); return; }
+                    var patch = EncounterSearch.PatchAround(o, moon);
+                    double cost = EncounterSearch.Cost(patch, _goalRadius, minPe);
+                    if (cost < CorrectionTolerance)
+                    {
+                        Skip($"On course: periapsis {(patch!.PeR - moon.Radius) / 1000.0:F1} km around {moon.bodyName}, " +
+                             $"no correction needed.");
+                        return;
+                    }
+                    double ut = now + CorrectionDelay;
+                    var node = solver.AddManeuverNode(ut);
+                    var search = new EncounterSearch(solver, node, moon, _goalRadius, minPe);
+                    var (dv, after) = search.BestCorrection(ut, Vector3d.zero, 20.0);
+                    if (after >= cost || dv.magnitude < 0.05)
+                    {
+                        node.RemoveSelf();
+                        if (patch == null) { Fail($"Missed {moon.bodyName} and no correction finds it again."); return; }
+                        Skip($"No better correction found (periapsis {(patch.PeR - moon.Radius) / 1000.0:F1} km).");
+                        return;
+                    }
+                    _nextNeedsManeuverMode = Math.Abs(dv.x) > 0.01 || Math.Abs(dv.y) > 0.01;
+                    _nextPrecise = true;
+                    var p2 = search.Patch;
+                    Log($"Course correction: {dv.magnitude:F2} m/s (radial {dv.x:F2}, normal {dv.y:F2}, prograde " +
+                        $"{dv.z:F2}); periapsis {(patch != null ? (patch.PeR - moon.Radius) / 1000.0 : double.NaN):F1} → " +
+                        $"{(p2 != null ? (p2.PeR - moon.Radius) / 1000.0 : double.NaN):F1} km.");
+                    break;
+                }
+                default:  // capture
+                {
+                    if (_carrier.mainBody != moon) { Fail($"Not around {moon.bodyName}."); return; }
+                    if (o.eccentricity < 1.0 && o.ApR < moon.sphereOfInfluence)
+                    {
+                        Skip($"Already captured around {moon.bodyName}.");
+                        return;
+                    }
+                    double ut = now + o.timeToPe;
+                    if (o.timeToPe < MinNodeLead) { Fail("Too close to the periapsis to plan the capture."); return; }
+                    double dv = _planner.CircularizeAt(moon.gravParameter, o.PeR, o.semiMajorAxis);
+                    AddNode(solver, ut, new Vector3d(0.0, 0.0, dv));
+                    Log($"Capture around {moon.bodyName}: {dv:F1} m/s at the periapsis " +
+                        $"({(o.PeR - moon.Radius) / 1000.0:F1} km).");
+                    break;
+                }
+            }
+        }
+
         // Parts the carrier must never stage away: the satellites not released yet,
         // with their separators.
         private ISet<uint> SatellitesOnBoard()
@@ -773,6 +941,11 @@ namespace RelayOrbiter.Plugin
             StepKind.CreateTransferNode          => "Plan the transfer burn to the target orbit",
             StepKind.CreateTargetCircularizeNode => "Plan the circularization at the target orbit",
             StepKind.CreatePlaneChangeNode       => "Plan the plane change",
+            StepKind.CreateMoonPlaneNode         => $"Plan the plane change into {_destination?.bodyName}'s orbital plane",
+            StepKind.CreateEjectionNode          => $"Plan the transfer to {_destination?.bodyName}",
+            StepKind.CreateCourseCorrectionNode  => $"Plan a course correction towards {_destination?.bodyName}",
+            StepKind.WarpToSoi                   => $"Coast to {_destination?.bodyName}'s sphere of influence",
+            StepKind.CreateCaptureNode           => $"Plan the capture around {_destination?.bodyName}",
             StepKind.ExecuteNode           => s.Satellite < 0 ? "Carrier: burn"
                                                               : $"{Sat(s.Satellite)}: circularization burn",
             _ => s.Kind.ToString(),

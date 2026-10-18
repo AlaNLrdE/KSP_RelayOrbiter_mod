@@ -24,6 +24,8 @@ namespace RelayOrbiter.Plugin
         private readonly IConstellationCalculator _calculator;
         private readonly ConstellationSettings    _settings;
         private readonly TransferPlanner          _transfer;
+        private readonly MoonTransferPlanner      _moonPlanner = new MoonTransferPlanner(new OrbitalMechanics());
+        private const double MoonCorrectionMargin = 30.0;  // m/s kept for a course correction
         private readonly Func<double, string>     _formatTime;
         private string _inclinationText = "";
         private MechJebAscent? _launch;           // MechJeb is flying the ascent
@@ -72,8 +74,10 @@ namespace RelayOrbiter.Plugin
             StopLaunch("Launch aborted.");
         }
 
-        // target: the window's valid target altitude, if any; targetProblem: why it isn't valid.
-        public void Draw(Body selected, double? target, string? targetProblem)
+        // current: the body orbited; selected: where to deploy (current, or one of its
+        // moons to travel to first). target: the window's valid target altitude around
+        // `selected`, if any; targetProblem: why it isn't valid.
+        public void Draw(Body current, Body selected, double? target, string? targetProblem)
         {
             if (_ok == null) CreateStyles();
             if (_runner != null) { DrawRunner(); return; }
@@ -127,9 +131,12 @@ namespace RelayOrbiter.Plugin
             }
 
             // The vessel's checks come after the satellites', so they show on the launch pad too.
-            if (onGround) { DrawLaunch(vessel, selected, target, targetProblem, n, order); return; }
+            var moon = selected.Name == current.Name ? null
+                     : FlightGlobals.Bodies.FirstOrDefault(b => GameBodyDatabase.NameOf(b) == selected.Name);
+            if (selected.Name != current.Name && moon == null) { Warn($"{selected.Name} not found."); return; }
+            if (onGround) { DrawLaunch(vessel, current, selected, target, targetProblem, n, order); return; }
             if (vessel.situation != Vessel.Situations.ORBITING) { Warn("Get into a stable orbit first."); return; }
-            if (_altitudes.Validate(selected, orbit.ApA) != AltitudeStatus.Ok) { Warn("The apoapsis is not usable."); return; }
+            if (_altitudes.Validate(current, orbit.ApA) != AltitudeStatus.Ok) { Warn("The apoapsis is not usable."); return; }
             var solver = vessel.patchedConicSolver;
             if (solver == null) { Warn("Maneuver nodes are not available yet."); return; }
             if (solver.maneuverNodes.Count > 0) { Warn("Delete the vessel's maneuver nodes first (Maneuvers tab)."); return; }
@@ -144,14 +151,42 @@ namespace RelayOrbiter.Plugin
             }
             double rGoal = selected.Radius + target.Value;
             var transfer = _transfer.Plan(selected.Mu, orbit.ApR, orbit.PeR, rGoal);
-            Row("Altitude", Km(target.Value) + (transfer.Needed ? "" : "  (already there)"));
-            DrawInclination(orbit.inclination);
+            MoonTransferPlan? toMoon = null;
+            double moonWait = 0.0, moonPlaneAngle = 0.0, moonPlaneDv = 0.0;
+            if (moon != null)
+            {
+                // Travel first: captured straight onto the target orbit's radius.
+                toMoon = _moonPlanner.Plan(current.Mu, orbit.semiMajorAxis, moon.orbit.semiMajorAxis, selected.Mu, rGoal);
+                double now0 = Planetarium.GetUniversalTime();
+                double phase = MoonTransferPlanner.PhaseAngleDeg(MeanLongitude.At(orbit, now0), MeanLongitude.At(moon.orbit, now0));
+                moonWait = MoonTransferPlanner.WaitTime(phase, toMoon.PhaseAngleDeg, orbit.period, moon.orbit.period);
+                transfer = new TransferPlan(false, Apsis.Periapsis, rGoal, 0.0, 0.0, 0.0);
+                Row($"Transfer to {selected.Name}", $"window in {_formatTime(moonWait)} (phase {phase:F0}°, needs " +
+                                                   $"{toMoon.PhaseAngleDeg:F0}°), {_formatTime(toMoon.TransferTime)} on the way");
+                var moonPlane = new OrbitPlane(moon.orbit.inclination, moon.orbit.LAN);
+                moonPlaneAngle = PlaneGrouping.RelativeInclinationDeg(new OrbitPlane(orbit.inclination, orbit.LAN), moonPlane);
+                if (moonPlaneAngle >= 0.2)
+                {
+                    moonPlaneDv = PlaneGrouping.PlaneChangeDv(orbit.orbitalSpeed, moonPlaneAngle);
+                    Row($"Into {selected.Name}'s plane", $"{moonPlaneAngle:F1}°, {Ms(moonPlaneDv)} first");
+                }
+                Row("Ejection burn", $"{Ms(Math.Abs(toMoon.EjectionDv))} {ReleasePoint.Direction(toMoon.EjectionDv)}, " +
+                                     "fine-tuned with KSP's prediction");
+                Row("Course correction", $"if needed, about {Ms(MoonCorrectionMargin)} reserved");
+                Row($"Capture at {Km(target.Value)}", $"{Ms(Math.Abs(toMoon.CaptureDv))} retrograde at the periapsis");
+                if (orbit.eccentricity > 0.05)
+                    Warn("The orbit is not circular: the window estimate is rough (the ejection is fine-tuned anyway).");
+            }
+            Row("Altitude", Km(target.Value) + (transfer.Needed || moon != null ? "" : "  (already there)"));
+            DrawInclination(moon != null ? 0.0 : orbit.inclination);
+            // Around a moon the arrival plane isn't known yet: assume its equator.
+            double startInc = moon != null ? 0.0 : orbit.inclination;
             bool planeChange = _settings.ChangeInclination &&
-                               PlaneChange.Needed(orbit.inclination, _settings.InclinationDeg);
+                               (moon != null || PlaneChange.Needed(orbit.inclination, _settings.InclinationDeg));
             // Change the plane where the carrier is slowest: before lowering, after raising.
-            bool planeFirst = transfer.Needed && rGoal < orbit.semiMajorAxis;
+            bool planeFirst = moon == null && transfer.Needed && rGoal < orbit.semiMajorAxis;
             double vPlane = Math.Sqrt(selected.Mu / (planeFirst ? orbit.semiMajorAxis : rGoal));
-            var pc = PlaneChange.DeltaV(vPlane, orbit.inclination, _settings.InclinationDeg, ascending: true);
+            var pc = PlaneChange.DeltaV(vPlane, startInc, _settings.InclinationDeg, ascending: true);
             double planeDv = planeChange ? Math.Sqrt(pc.prograde * pc.prograde + pc.normal * pc.normal) : 0.0;
             if (transfer.Needed)
             {
@@ -169,6 +204,7 @@ namespace RelayOrbiter.Plugin
             var plan    = _planner.Plan(selected.Mu, rGoal, rGoal, now, n, parking);
             double transferTime = transfer.Needed
                 ? Math.PI * Math.Sqrt(Math.Pow(transfer.TransferSma, 3) / selected.Mu) : 0.0;
+            if (toMoon != null) transferTime = moonWait + toMoon.TransferTime;
             double carrierBurn = BurnTiming.Duration(plan.ParkingDeltaV, releases.CarrierMassAfterFirst,
                                                      releases.CarrierThrust, releases.CarrierIsp) ?? 0.0;
             var satBurns = releases.Satellites.Skip(1)
@@ -208,7 +244,8 @@ namespace RelayOrbiter.Plugin
             // Δv of the carrier alone: its running engines and its own propellant, minus what
             // goes to the satellites, while carrying every satellite (the worst case). KSP's
             // own readout also counts the satellites' stages.
-            double carrierDv = transfer.TotalDv + planeDv + Math.Abs(plan.ParkingDeltaV);
+            double carrierDv = transfer.TotalDv + planeDv + Math.Abs(plan.ParkingDeltaV) +
+                               (toMoon != null ? toMoon.TotalDv + MoonCorrectionMargin + moonPlaneDv : 0.0);
             double available = VesselParts.CarrierDeltaV(vessel, new HashSet<uint>(satIds),
                 _topUp ? transfers : (IReadOnlyList<ResourceTransfer>)Array.Empty<ResourceTransfer>(), releases.CarrierIsp);
             Row("Carrier Δv needed", $"{Ms(carrierDv)}  (carrier has about {Ms(available)})",
@@ -220,7 +257,7 @@ namespace RelayOrbiter.Plugin
             if (_settings.ChangeInclination && !_inclinationValid)
                 problems.Add("Fix the target inclination (0 to 180°).");
             // CanSetMode(Maneuver) is false while there is no node yet; ask for the SAS skill instead.
-            if (planeChange && vessel.VesselValues.AutopilotSkill.value < ManeuverSasSkill &&
+            if ((planeChange || moonPlaneDv > 0.0) && vessel.VesselValues.AutopilotSkill.value < ManeuverSasSkill &&
                 !vessel.Autopilot.CanSetMode(VesselAutopilot.AutopilotMode.Maneuver))
                 problems.Add("The plane change needs SAS maneuver mode (probe core or pilot with SAS level 3).");
             if (parking == ParkingOrbit.Inner)
@@ -244,6 +281,8 @@ namespace RelayOrbiter.Plugin
             foreach (var p in problems) Warn(p);
 
             _extendPanels = GUILayout.Toggle(_extendPanels, " Extend the satellites' solar panels before release");
+            NodeExecutor.AutoActivateEngines = GUILayout.Toggle(NodeExecutor.AutoActivateEngines,
+                " Activate the current stage's engines when none is running before a burn");
 
             // Names: callsign unique around this body, orbit tag, inclination.
             string callsign = ConstellationNaming.Callsign(selected.Name, FlightGlobals.Vessels.Select(v => v.vesselName));
@@ -277,7 +316,8 @@ namespace RelayOrbiter.Plugin
                     _startRequested = true;
                 }
                 else StartRun(vessel, order, carrierBurn, satBurns, parking, rGoal,
-                              new TransferSteps(transfer.Needed, planeChange, planeFirst), names);
+                              new TransferSteps(transfer.Needed || moon != null, planeChange, planeFirst, moon != null),
+                              names, moon);
             }
             else if (_startRequested && Event.current.type == EventType.Repaint)
             {
@@ -285,7 +325,8 @@ namespace RelayOrbiter.Plugin
                 _startRequested = false;
                 if (problems.Count == 0)
                     StartRun(vessel, order, carrierBurn, satBurns, parking, rGoal,
-                             new TransferSteps(transfer.Needed, planeChange, planeFirst), names);
+                             new TransferSteps(transfer.Needed || moon != null, planeChange, planeFirst, moon != null),
+                             names, moon);
             }
             GUI.enabled = wasEnabled;
             GUILayout.Label("While it runs: don't touch the controls and don't switch vessels or leave the " +
@@ -325,7 +366,8 @@ namespace RelayOrbiter.Plugin
 
         // ── Launch from the ground with MechJeb ──────────────────────────────
 
-        private void DrawLaunch(Vessel vessel, Body body, double? target, string? targetProblem, int n,
+        // current: the body launched from; body: where the constellation goes.
+        private void DrawLaunch(Vessel vessel, Body current, Body body, double? target, string? targetProblem, int n,
                                 List<SatelliteCandidate> order)
         {
             GUILayout.Label("Launch to orbit (MechJeb)", _header);
@@ -347,12 +389,19 @@ namespace RelayOrbiter.Plugin
                 return;
             }
 
-            double launchAlt = LaunchPlanner.LaunchAltitude(body, target.Value);
+            bool toMoon = body.Name != current.Name;
+            // Travelling on: a low parking orbit around the launch body.
+            double launchAlt = toMoon ? LaunchPlanner.ParkingAltitude(current) : LaunchPlanner.LaunchAltitude(body, target.Value);
             DrawInclination(Math.Abs(vessel.latitude));
-            double inclination = _settings.ChangeInclination ? _settings.InclinationDeg : 0.0;
+            // Travelling to a moon: launch into its orbital plane's inclination (the node is
+            // matched in orbit); the target inclination applies around the moon.
+            var moonBody = toMoon ? FlightGlobals.Bodies.FirstOrDefault(b => GameBodyDatabase.NameOf(b) == body.Name) : null;
+            double inclination = moonBody != null ? moonBody.orbit.inclination
+                               : _settings.ChangeInclination ? _settings.InclinationDeg : 0.0;
             Row("Launch to", $"{Km(launchAlt)} circular, inclination {inclination:F1}°" +
                              (inclination < Math.Abs(vessel.latitude) ? " (or the launch site's latitude)" : ""));
-            Row("Then", (launchAlt < target.Value - 1.0 ? $"transfer to {Km(target.Value)}, " : "") +
+            Row("Then", (toMoon ? $"travel to {body.Name}, capture at {Km(target.Value)}, "
+                         : launchAlt < target.Value - 1.0 ? $"transfer to {Km(target.Value)}, " : "") +
                         $"deploy {n} satellites, {Resonance.SpacingDeg(n):F0}° apart");
             DrawCoverage(vessel, body, body.Radius + target.Value, order, n);
             _continueAfterLaunch = GUILayout.Toggle(_continueAfterLaunch, " Continue with the deployment once in orbit");
@@ -432,7 +481,8 @@ namespace RelayOrbiter.Plugin
         }
 
         private void StartRun(Vessel vessel, List<SatelliteCandidate> order, double carrierBurn, double[] satBurns,
-                              ParkingOrbit parking, double goalRadius, TransferSteps prelude, string[] names)
+                              ParkingOrbit parking, double goalRadius, TransferSteps prelude, string[] names,
+                              CelestialBody? destination)
         {
             var parts = order.Select(c => VesselParts.CommandPart(vessel, c)).ToArray();
             if (parts.Any(p => p == null))
@@ -457,6 +507,7 @@ namespace RelayOrbiter.Plugin
                 Transfer         = prelude.Transfer,
                 PlaneChange      = prelude.PlaneChange,
                 PlaneChangeFirst = prelude.PlaneChangeFirst,
+                Destination      = destination?.bodyName,
             };
             _runner = new DeploymentRunner(state, vessel, false, _planner, _transfer, _formatTime);
         }
@@ -467,7 +518,8 @@ namespace RelayOrbiter.Plugin
         {
             GUILayout.Label("Interrupted deployment", _header);
             int total = DeploymentSequence.Build(pending.CarrierBurn, pending.SatelliteBurns,
-                new TransferSteps(pending.Transfer, pending.PlaneChange, pending.PlaneChangeFirst)).Count;
+                new TransferSteps(pending.Transfer, pending.PlaneChange, pending.PlaneChangeFirst,
+                                  pending.Destination != null)).Count;
             Vessel? carrier = null;
             foreach (var v in FlightGlobals.Vessels)
                 if (v.persistentId == pending.Carrier) carrier = v;
