@@ -18,6 +18,7 @@ namespace RelayOrbiter.Plugin
         private const double MinTurnDeg    = 60.0;  // carrier turn that moves its end off the satellite's path
         private const double ClearDelay    = 2.0;   // s after release before the carrier starts turning
         private const double OrientSasWait = 10.0;  // s for SAS to accept the orientation mode (just out of warp)
+        private const double ReleaseSettle = 1.0;     // s of physics before a release
         private const double MinNodeLead   = 60.0;  // s: never place a transfer node closer than this
         // KSP unloads orbiting vessels 2.5 km from the active one; switching back to an
         // unloaded carrier reloads the scene and ends the run. Keep it loaded meanwhile.
@@ -72,6 +73,7 @@ namespace RelayOrbiter.Plugin
         private bool _orienting;  // false when orientation was skipped
         private bool _modeSet;    // SAS has accepted the orientation mode
         private double _orientSince;
+        private double _unpackedSince = double.NaN;  // Release: since when the carrier has physics
         private VesselAutopilot.AutopilotMode _orientMode;
         private double _alignedSince = double.NaN;
         // Parking burn time, fixed at the first warp: on a near-circular orbit the
@@ -270,7 +272,8 @@ namespace RelayOrbiter.Plugin
                     break;
 
                 case StepKind.Release:
-                    _released = false;  // fired in Advance, once the carrier has physics
+                    _released = false;  // fired in Advance, once the carrier has had physics a moment
+                    _unpackedSince = _carrier.packed ? double.NaN : now;
                     break;
                 case StepKind.Wait:
                     _until = now + s.Seconds;
@@ -358,8 +361,11 @@ namespace RelayOrbiter.Plugin
 
                 case StepKind.Release:
                 {
-                    if (_carrier.packed) { Status = "Waiting for physics before the release"; return false; }
+                    if (_carrier.packed) { _unpackedSince = double.NaN; Status = "Waiting for physics before the release"; return false; }
                     if (_released) return true;
+                    // Just out of time warp the vessel is still settling: let it have physics for a moment.
+                    if (double.IsNaN(_unpackedSince)) _unpackedSince = now;
+                    if (now - _unpackedSince < ReleaseSettle) { Status = "Settling before the release"; return false; }
                     _released = true;
                     _lastReleased = s.Satellite;
                     var part = VesselParts.Find(_carrier, _separators[s.Satellite]);
