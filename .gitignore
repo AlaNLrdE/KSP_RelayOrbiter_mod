@@ -16,3 +16,10 @@ TestResults/
 KspPaths.props
 # Build output staged into the mod folder
 GameData/RelayOrbiter/Plugins/
+
+# ── Documentation ─────────────────────────────────────────────────────────────
+docs/_build/
+docs/.venv/
+
+# ── Release packages ──────────────────────────────────────────────────────────
+dist/

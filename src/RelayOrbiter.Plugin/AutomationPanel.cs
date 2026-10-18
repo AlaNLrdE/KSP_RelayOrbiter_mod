@@ -93,7 +93,7 @@ namespace RelayOrbiter.Plugin
             GUILayout.Label($"Satellites (click {_settings.Satellites} in release order)", _header);
             if (candidates.Count == 0)
             {
-                Warn("No satellites found: each must hang on a decoupler or a docking-port pair and have a probe core.");
+                Warn("No satellites found: each must hang on a decoupler or a docking port and have a probe core.");
                 return;
             }
             foreach (var c in candidates)

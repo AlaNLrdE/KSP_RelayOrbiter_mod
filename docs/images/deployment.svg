@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="380" viewBox="0 0 1040 380" font-family="Helvetica, Arial, sans-serif">
+<rect width="100%" height="100%" fill="#FFFFFF"/>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 0 0 L 10 5 L 0 10 z" fill="#5B6B7C"/>
+  </marker>
+  <marker id="arrow-orbit" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 0 0 L 10 5 L 0 10 z" fill="#3B6EA8"/>
+  </marker>
+</defs>
+<text x="520.0" y="28.0" font-size="15" text-anchor="middle" fill="#1F2A37" font-weight="bold">Deployment sequence — one release per parking orbit</text>
+<text x="130.0" y="62.0" font-size="14" text-anchor="middle" fill="#1F2A37" font-weight="bold">t = 0</text>
+<text x="130.0" y="80.0" font-size="12" text-anchor="middle" fill="#5B6B7C" font-weight="normal">Release SAT-1 at apoapsis</text>
+<circle cx="130.0" cy="190" r="34.3" fill="#D6E6F5"/>
+<circle cx="130.0" cy="190" r="30.8" fill="#7FA7D1"/>
+<circle cx="130.0" cy="190" r="82.0" fill="none" stroke="#3B6EA8" stroke-width="2"/>
+<ellipse cx="110.6" cy="190" rx="62.6" ry="59.5" fill="none" stroke="#D9822B" stroke-width="1.6" stroke-dasharray="7 5"/>
+<line x1="222.0" y1="190.0" x2="230.0" y2="190.0" stroke="#5B6B7C" stroke-width="1"/>
+<text x="234.0" y="194.0" font-size="10" text-anchor="start" fill="#5B6B7C" font-weight="normal">0°</text>
+<polygon points="212.0,181.0 221.0,190.0 212.0,199.0 203.0,190.0" fill="#D9822B" stroke="#FFFFFF" stroke-width="1.5"/>
+<text x="206.0" y="216.0" font-size="11" text-anchor="middle" fill="#D9822B" font-weight="bold">Carrier</text>
+<rect x="205.0" y="168.0" width="12" height="12" rx="2" fill="#2E7D5B" stroke="#FFFFFF" stroke-width="1.5"/>
+<text x="235.0" y="178.0" font-size="11" text-anchor="middle" fill="#2E7D5B" font-weight="bold">SAT-1</text>
+<line x1="212.0" y1="181.0" x2="212.0" y2="180.0" stroke="#2E7D5B"/>
+<text x="130.0" y="334.0" font-size="12" text-anchor="middle" fill="#1F2A37" font-weight="normal">Carrier + SAT-1 at 0°</text>
+<line x1="260" y1="60" x2="260" y2="350" stroke="#E3E8EE" stroke-width="1"/>
+<text x="390.0" y="62.0" font-size="14" text-anchor="middle" fill="#1F2A37" font-weight="bold">t = T_e</text>
+<text x="390.0" y="80.0" font-size="12" text-anchor="middle" fill="#5B6B7C" font-weight="normal">Release SAT-2</text>
+<circle cx="390.0" cy="190" r="34.3" fill="#D6E6F5"/>
+<circle cx="390.0" cy="190" r="30.8" fill="#7FA7D1"/>
+<circle cx="390.0" cy="190" r="82.0" fill="none" stroke="#3B6EA8" stroke-width="2"/>
+<ellipse cx="370.6" cy="190" rx="62.6" ry="59.5" fill="none" stroke="#D9822B" stroke-width="1.6" stroke-dasharray="7 5"/>
+<line x1="482.0" y1="190.0" x2="490.0" y2="190.0" stroke="#5B6B7C" stroke-width="1"/>
+<text x="494.0" y="194.0" font-size="10" text-anchor="start" fill="#5B6B7C" font-weight="normal">0°</text>
+<path d="M 445.8 190.0 A 55.8 55.8 0 1 0 362.1 238.3" fill="none" stroke="#5B6B7C" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#arrow)"/>
+<text x="370.3" y="159.9" font-size="11" text-anchor="middle" fill="#5B6B7C" font-weight="normal">240°</text>
+<polygon points="472.0,181.0 481.0,190.0 472.0,199.0 463.0,190.0" fill="#D9822B" stroke="#FFFFFF" stroke-width="1.5"/>
+<text x="466.0" y="216.0" font-size="11" text-anchor="middle" fill="#D9822B" font-weight="bold">Carrier</text>
+<rect x="343.0" y="255.0" width="12" height="12" rx="2" fill="#2E7D5B" stroke="#FFFFFF" stroke-width="1.5"/>
+<text x="335.0" y="285.0" font-size="11" text-anchor="middle" fill="#2E7D5B" font-weight="bold">SAT-1</text>
+<rect x="465.0" y="168.0" width="12" height="12" rx="2" fill="#2E7D5B" stroke="#FFFFFF" stroke-width="1.5"/>
+<text x="495.0" y="178.0" font-size="11" text-anchor="middle" fill="#2E7D5B" font-weight="bold">SAT-2</text>
+<line x1="472.0" y1="181.0" x2="472.0" y2="180.0" stroke="#2E7D5B"/>
+<text x="390.0" y="334.0" font-size="12" text-anchor="middle" fill="#1F2A37" font-weight="normal">SAT-1 has moved 240°</text>
+<line x1="520" y1="60" x2="520" y2="350" stroke="#E3E8EE" stroke-width="1"/>
+<text x="650.0" y="62.0" font-size="14" text-anchor="middle" fill="#1F2A37" font-weight="bold">t = 2 · T_e</text>
+<text x="650.0" y="80.0" font-size="12" text-anchor="middle" fill="#5B6B7C" font-weight="normal">Release SAT-3</text>
+<circle cx="650.0" cy="190" r="34.3" fill="#D6E6F5"/>
+<circle cx="650.0" cy="190" r="30.8" fill="#7FA7D1"/>
+<circle cx="650.0" cy="190" r="82.0" fill="none" stroke="#3B6EA8" stroke-width="2"/>
+<ellipse cx="630.6" cy="190" rx="62.6" ry="59.5" fill="none" stroke="#D9822B" stroke-width="1.6" stroke-dasharray="7 5"/>
+<line x1="742.0" y1="190.0" x2="750.0" y2="190.0" stroke="#5B6B7C" stroke-width="1"/>
+<text x="754.0" y="194.0" font-size="10" text-anchor="start" fill="#5B6B7C" font-weight="normal">0°</text>
+<polygon points="732.0,181.0 741.0,190.0 732.0,199.0 723.0,190.0" fill="#D9822B" stroke="#FFFFFF" stroke-width="1.5"/>
+<text x="726.0" y="216.0" font-size="11" text-anchor="middle" fill="#D9822B" font-weight="bold">Carrier</text>
+<rect x="603.0" y="113.0" width="12" height="12" rx="2" fill="#2E7D5B" stroke="#FFFFFF" stroke-width="1.5"/>
+<text x="599.0" y="105.0" font-size="11" text-anchor="middle" fill="#2E7D5B" font-weight="bold">SAT-1</text>
+<rect x="603.0" y="255.0" width="12" height="12" rx="2" fill="#2E7D5B" stroke="#FFFFFF" stroke-width="1.5"/>
+<text x="595.0" y="285.0" font-size="11" text-anchor="middle" fill="#2E7D5B" font-weight="bold">SAT-2</text>
+<rect x="725.0" y="168.0" width="12" height="12" rx="2" fill="#2E7D5B" stroke="#FFFFFF" stroke-width="1.5"/>
+<text x="755.0" y="178.0" font-size="11" text-anchor="middle" fill="#2E7D5B" font-weight="bold">SAT-3</text>
+<line x1="732.0" y1="181.0" x2="732.0" y2="180.0" stroke="#2E7D5B"/>
+<text x="650.0" y="334.0" font-size="12" text-anchor="middle" fill="#1F2A37" font-weight="normal">SAT-1 at 120°, SAT-2 at 240°</text>
+<line x1="780" y1="60" x2="780" y2="350" stroke="#E3E8EE" stroke-width="1"/>
+<text x="910.0" y="62.0" font-size="14" text-anchor="middle" fill="#1F2A37" font-weight="bold">Done</text>
+<text x="910.0" y="80.0" font-size="12" text-anchor="middle" fill="#5B6B7C" font-weight="normal">Constellation complete</text>
+<circle cx="910.0" cy="190" r="34.3" fill="#D6E6F5"/>
+<circle cx="910.0" cy="190" r="30.8" fill="#7FA7D1"/>
+<circle cx="910.0" cy="190" r="82.0" fill="none" stroke="#3B6EA8" stroke-width="2"/>
+<line x1="1002.0" y1="190.0" x2="1010.0" y2="190.0" stroke="#5B6B7C" stroke-width="1"/>
+<text x="1014.0" y="194.0" font-size="10" text-anchor="start" fill="#5B6B7C" font-weight="normal">0°</text>
+<rect x="863.0" y="113.0" width="12" height="12" rx="2" fill="#2E7D5B" stroke="#FFFFFF" stroke-width="1.5"/>
+<text x="859.0" y="105.0" font-size="11" text-anchor="middle" fill="#2E7D5B" font-weight="bold">SAT-1</text>
+<rect x="863.0" y="255.0" width="12" height="12" rx="2" fill="#2E7D5B" stroke="#FFFFFF" stroke-width="1.5"/>
+<text x="855.0" y="285.0" font-size="11" text-anchor="middle" fill="#2E7D5B" font-weight="bold">SAT-2</text>
+<rect x="986.0" y="184.0" width="12" height="12" rx="2" fill="#2E7D5B" stroke="#FFFFFF" stroke-width="1.5"/>
+<text x="1000.0" y="178.0" font-size="11" text-anchor="start" fill="#2E7D5B" font-weight="bold">SAT-3</text>
+<text x="910.0" y="334.0" font-size="12" text-anchor="middle" fill="#1F2A37" font-weight="normal">120° spacing, no angle measured</text>
+<text x="520.0" y="368.0" font-size="11" text-anchor="middle" fill="#5B6B7C" font-weight="normal">Each parking orbit takes T_e = ⅔ T_c, so the last satellite released always trails the carrier by 120°</text>
+</svg>
