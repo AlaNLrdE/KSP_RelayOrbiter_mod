@@ -93,7 +93,7 @@ namespace RelayOrbiter.Plugin
             var body = _body!;
 
             if (_automation.IsRunning || _automation.IsLaunching || _automation.HasPending) _tab = 2;
-            if (_maintenance.IsRunning) _tab = 3;
+            if (_maintenance.IsRunning || _maintenance.HasPending) _tab = 3;
 
             // The satellite count and target altitude are for a new deployment.
             AltitudeOption? option = null;
@@ -106,7 +106,7 @@ namespace RelayOrbiter.Plugin
 
             _tab = GUILayout.Toolbar(_tab, new[] { "Results", "Maneuvers", "Automation", "Maintenance" });
             if (_automation.IsRunning || _automation.IsLaunching || _automation.HasPending) _tab = 2;
-            if (_maintenance.IsRunning) _tab = 3;
+            if (_maintenance.IsRunning || _maintenance.HasPending) _tab = 3;
 
             if (_tab == 3)
                 _maintenance.Draw(body);

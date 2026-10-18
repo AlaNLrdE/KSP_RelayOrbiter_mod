@@ -6,70 +6,58 @@ using UnityEngine;
 
 namespace RelayOrbiter.Plugin
 {
-    // Puts the active satellite back in its slot of the constellation, one Tick per
-    // frame: shape (Hohmann to the target orbit, only when far off), phasing orbit
-    // (out and back), period trim. Each step plans its node from the orbits as they
-    // are then, so it corrects whatever the previous burns left.
+    // Puts satellites back in their slots, one Tick per frame. Each satellite goes
+    // through the CorrectionStages: transfer and circularize (only when far off), a
+    // phasing orbit out and back, a period trim. Every satellite is phased against
+    // the same frozen SlotFrame, so they all work in parallel: the runner always
+    // handles the next burn due, switching to that satellite when it is not the
+    // active vessel. Switching to an unloaded satellite reloads the flight scene; the
+    // state is in the save file (RelayOrbiterScenario) and the run resumes on its own.
     internal sealed class MaintenanceRunner
     {
         public enum RunState { Running, Done, Failed, Aborted }
 
-        private enum Kind { Transfer, Circularize, Phase, PhaseReturn, Trim }
+        private const double NodeLead      = 120.0;  // s from now to a node placed "now"
+        private const double MinNodeLead   = 60.0;
+        private const double SwitchLead    = 300.0;  // s before a burn: switch to its satellite
+        private const double SwitchTimeout = 30.0;   // s for a switch to a loaded vessel
+        private const double ReturnGap     = 1800.0; // s between two satellites' phasing returns
+        private const double MinBurn       = 2 * NodeBurn.PreciseDv;  // m/s: smaller burns are skipped
 
-        private static readonly Kind[] Sequence =
-            { Kind.Transfer, Kind.Circularize, Kind.Phase, Kind.PhaseReturn, Kind.Trim };
-
-        private const double NodeLead = 120.0;  // s from now to a node placed "now"
-        private const double MinNodeLead = 60.0;
-        private const double MinBurn = 2 * NodeBurn.PreciseDv;  // m/s: smaller burns are skipped
-
-        private readonly Vessel _vessel;
-        private readonly IReadOnlyList<Vessel> _members;  // the constellation, _vessel included
-        private readonly int _active, _slots;
-        private readonly int? _reference;
-        private readonly double _targetSma, _minRadius, _maxRadius;
-        private readonly int _minOrbits;
+        private readonly MaintenanceState _state;
         private readonly TransferPlanner _transfer;
         private readonly PhasingPlanner _phasing;
         private readonly IDeploymentPlanner _planner;
         private readonly Func<double, string> _formatTime;
+        private readonly Warp _warp = new Warp();
 
-        private int _index;
-        private bool _started;
         private NodeExecutor? _executor;
-        private double _phaseUT = double.NaN;
-        private int _phaseOrbits;
+        private bool _switching;
+        private double _switchUntil;
 
-        public MaintenanceRunner(Vessel vessel, IReadOnlyList<Vessel> members, int slots, int? reference,
-                                 double targetSma, double minRadius, double maxRadius, int minOrbits,
-                                 TransferPlanner transfer, PhasingPlanner phasing, IDeploymentPlanner planner,
-                                 Func<double, string> formatTime)
+        // A new correction, or one resumed from the save file after a scene reload.
+        public MaintenanceRunner(MaintenanceState state, bool resumed, TransferPlanner transfer,
+                                 PhasingPlanner phasing, IDeploymentPlanner planner, Func<double, string> formatTime)
         {
-            _vessel     = vessel;
-            _members    = members;
-            _active     = members.ToList().IndexOf(vessel);
-            _slots      = slots;
-            _reference  = reference;
-            _targetSma  = targetSma;
-            _minRadius  = minRadius;
-            _maxRadius  = maxRadius;
-            _minOrbits  = minOrbits;
+            _state      = state;
             _transfer   = transfer;
             _phasing    = phasing;
             _planner    = planner;
             _formatTime = formatTime;
-            if (_active < 0) throw new ArgumentException("The vessel is not in the constellation.", nameof(vessel));
-            VesselParts.ActivateEngines(vessel);
-            Log($"Correcting {vessel.vesselName}: {members.Count} satellites in {slots} slots, reference " +
-                $"{(reference.HasValue ? members[reference.Value].vesselName : "best fit")}, " +
-                $"target orbit {(targetSma - vessel.mainBody.Radius) / 1000.0:F2} km.");
+
             double now = Planetarium.GetUniversalTime();
-            var fit = FitAt(now);
-            for (int i = 0; i < members.Count; ++i)
+            int toDo = state.Stage.Count(s => s != CorrectionStage.Done);
+            Log((resumed ? "Correction resumed: " : "Correction started: ") +
+                $"{toDo} of {state.Members.Length} satellites to correct, {state.Slots} slots, reference " +
+                $"{(state.Reference >= 0 ? Name(state.Reference) : "best fit")}, target orbit " +
+                $"{state.TargetSma:F0} m (period {state.TargetPeriod:F1} s).");
+            for (int i = 0; i < state.Members.Length; ++i)
             {
-                var o = members[i].orbit;
-                Log($"  {members[i].vesselName}: L {MeanLongitude.At(o, now):F2}° (Ω {o.LAN:F2}, ω " +
-                    $"{o.argumentOfPeriapsis:F2}), slot #{fit.SlotOf[i] + 1}, off {fit.ErrorsDeg[i]:+0.00;-0.00}°, " +
+                var v = Member(i);
+                if (v == null) { Log($"  member {state.Members[i]}: not found"); continue; }
+                var o = v.orbit;
+                Log($"  {v.vesselName}: {state.Stage[i]}, L {MeanLongitude.At(o, now):F2}° (Ω {o.LAN:F2}, ω " +
+                    $"{o.argumentOfPeriapsis:F2}), slot #{state.SlotOf[i] + 1}, off {SlotError(i, now):+0.00;-0.00}°, " +
                     $"a {o.semiMajorAxis:F0} m, e {o.eccentricity:F5}, i {o.inclination:F2}°, T {o.period:F1} s");
             }
         }
@@ -77,46 +65,33 @@ namespace RelayOrbiter.Plugin
         public RunState State  { get; private set; } = RunState.Running;
         public string   Status { get; private set; } = "";
         public string   Error  { get; private set; } = "";
-        public int      Step   => Math.Min(_index + 1, Sequence.Length);
-        public int      Steps  => Sequence.Length;
-        public string   CurrentStep => _index < Sequence.Length ? Describe(Sequence[_index]) : "Done";
+        public string   CurrentStep { get; private set; } = "";
+        public int      Remaining => _state.Stage.Count(s => s != CorrectionStage.Done);
+        public int      BurnsDone => _state.BurnsDone;
+        public double   Progress  => _state.Progress;
+        public int      BurnsEstimate => _state.BurnsEstimate;
 
-        public bool CanFastForward => State == RunState.Running && _executor != null && _executor.IsWaiting;
+        // The satellites still to correct and their next burn, from the last schedule.
+        public IReadOnlyList<string> Upcoming => _upcoming;
+        private readonly List<string> _upcoming = new List<string>();
 
-        public void FastForward() => _executor?.FastForward();
+        public MaintenanceState ToState() => _state;
+
+        public bool CanFastForward =>
+            State == RunState.Running && (_executor == null ? !_switching : _executor.IsWaiting);
+
+        public void FastForward()
+        {
+            _warp.Now();
+            _executor?.FastForward();
+        }
 
         public void Tick()
         {
             if (State != RunState.Running) return;
-            if (_index >= Sequence.Length)
-            {
-                State = RunState.Done;
-                var fit = FitAt(Planetarium.GetUniversalTime());
-                Status = $"{_vessel.vesselName} corrected: {fit.ErrorsDeg[_active]:+0.00;-0.00}° from its slot, " +
-                         $"drift {Drift(_vessel.orbit):+0.000;-0.000}°/orbit.";
-                Log(Status);
-                return;
-            }
-            if (FlightGlobals.ActiveVessel != _vessel) { Fail("The satellite is no longer the active vessel."); return; }
-
-            var kind = Sequence[_index];
-            if (!_started)
-            {
-                _started = true;
-                Log($"Step {Step}/{Steps}: {Describe(kind)}");
-                _executor = CreateNode(kind) ? new NodeExecutor(_vessel, _formatTime, precise: true) : null;
-                if (State != RunState.Running) return;
-            }
-            if (_executor != null)
-            {
-                var r = _executor.Tick();
-                Status = _executor.Status;
-                if (r == NodeExecutor.Result.Failed) { Fail(_executor.Error); return; }
-                if (r != NodeExecutor.Result.Done) return;
-                _executor = null;
-            }
-            _index++;
-            _started = false;
+            double now = Planetarium.GetUniversalTime();
+            if (_state.Current < 0) Schedule(now);
+            else Work(_state.Current, now);
         }
 
         public void Abort()
@@ -124,118 +99,269 @@ namespace RelayOrbiter.Plugin
             if (State != RunState.Running) return;
             Stop();
             State = RunState.Aborted;
-            Status = $"Aborted at step {Step}/{Steps} ({CurrentStep}).";
+            // Switching to an unloaded satellite destroys the scene (and aborts this
+            // runner) after the game saved the state: the run carries on after the reload.
+            Status = _switching ? "Scene reloading for the switch: the correction carries on after it."
+                                : "Aborted" + (CurrentStep.Length > 0 ? $" ({CurrentStep})." : ".");
             Log(Status);
         }
 
-        // ── Nodes ────────────────────────────────────────────────────────────
+        // ── Scheduling ───────────────────────────────────────────────────────
 
-        // True when a node was created (and must be flown).
-        private bool CreateNode(Kind kind)
+        // Find the next burn due among the satellites (skipping the stages they don't
+        // need); warp towards it, and take it on once it is close.
+        private void Schedule(double now)
         {
-            var solver = _vessel.patchedConicSolver;
-            if (solver == null) { Fail("Maneuver nodes are not available."); return false; }
-            foreach (var n in solver.maneuverNodes.ToList()) n.RemoveSelf();
-
-            var o = _vessel.orbit;
-            double mu = o.referenceBody.gravParameter;
-            double now = Planetarium.GetUniversalTime();
-            switch (kind)
+            int next = -1;
+            double nextUT = double.MaxValue;
+            var due = new List<(double ut, string text)>();
+            for (int i = 0; i < _state.Members.Length; ++i)
             {
-                case Kind.Transfer:
+                var v = Member(i);
+                if (_state.Stage[i] == CorrectionStage.Done) continue;
+                if (v == null) { Fail($"Satellite {_state.Members[i]} is gone."); return; }
+                Burn? burn;
+                while ((burn = Plan(i, v.orbit, now, commit: false)) == null && State == RunState.Running &&
+                       _state.Stage[i] != CorrectionStage.Done)
+                    AdvanceStage(i, now);
+                if (State != RunState.Running) return;
+                if (burn == null) continue;
+                due.Add((burn.UT, $"{Name(i)}: {Describe(_state.Stage[i])} in {_formatTime(Math.Max(0.0, burn.UT - now))}"));
+                if (burn.UT < nextUT) { nextUT = burn.UT; next = i; }
+            }
+            _upcoming.Clear();
+            _upcoming.AddRange(due.OrderBy(d => d.ut).Select(d => d.text));
+
+            if (next < 0)
+            {
+                State = RunState.Done;
+                CurrentStep = "";
+                Status = "Constellation corrected: " + string.Join(", ",
+                    Enumerable.Range(0, _state.Members.Length)
+                              .Select(i => $"{Name(i)} {SlotError(i, now):+0.00;-0.00}°"));
+                Log(Status);
+                return;
+            }
+            if (nextUT - now > SwitchLead)
+            {
+                _warp.Towards(nextUT - SwitchLead);
+                CurrentStep = $"Next: {Name(next)}, {Describe(_state.Stage[next])}";
+                Status = $"Waiting: {_formatTime(nextUT - now)} to {Name(next)}'s burn";
+                return;
+            }
+            if (TimeWarp.CurrentRateIndex > 0) TimeWarp.SetRate(0, true, false);
+            _state.Current = next;
+            _switching = false;
+        }
+
+        // Switch to satellite i, then plan and fly its burn.
+        private void Work(int i, double now)
+        {
+            var vessel = Member(i);
+            if (vessel == null) { Fail($"Satellite {_state.Members[i]} is gone."); return; }
+            CurrentStep = $"{vessel.vesselName}: {Describe(_state.Stage[i])}";
+
+            if (FlightGlobals.ActiveVessel != vessel)
+            {
+                if (_executor != null) { Fail("The satellite is no longer the active vessel."); return; }
+                if (!_switching)
                 {
-                    if (!StationKeeping.NeedsTransfer(o.ApR, o.PeR, _targetSma))
-                        return Skip("Close to the target orbit: no transfer needed.");
-                    var t = _transfer.Plan(mu, o.ApR, o.PeR, _targetSma);
-                    double timeTo = t.FirstBurnAt == Apsis.Periapsis ? o.timeToPe : o.timeToAp;
-                    double ut = _planner.NextPassUT(now, timeTo, o.period, MinNodeLead);
-                    return Add(solver, ut, t.FirstDv,
-                               $"Transfer burn: {t.FirstDv:F2} m/s at {t.FirstBurnAt.ToString().ToLowerInvariant()}.");
+                    // An unloaded satellite reloads the scene: this runner ends here and
+                    // the saved state resumes on the satellite.
+                    _switching = true;
+                    _switchUntil = now + SwitchTimeout;
+                    Log($"Switching to {vessel.vesselName}" + (vessel.loaded ? "." : " (unloaded: the scene reloads)."));
+                    FlightGlobals.ForceSetActiveVessel(vessel);
                 }
-                case Kind.Circularize:
+                else if (now > _switchUntil) Fail($"Could not switch to {vessel.vesselName}.");
+                Status = $"Switching to {vessel.vesselName}";
+                return;
+            }
+            _switching = false;
+            if (vessel.packed) { Status = "Waiting for physics"; return; }
+
+            if (_executor == null)
+            {
+                var solver = vessel.patchedConicSolver;
+                if (solver == null) { Fail("Maneuver nodes are not available."); return; }
+                foreach (var n in solver.maneuverNodes.ToList()) n.RemoveSelf();
+                VesselParts.ActivateEngines(vessel);
+                var burn = Plan(i, vessel.orbit, now, commit: true);
+                if (State != RunState.Running) return;
+                if (burn == null) { AdvanceStage(i, now); _state.Current = -1; return; }
+                var node = solver.AddManeuverNode(burn.UT);
+                node.OnGizmoUpdated(new Vector3d(0.0, 0.0, burn.Dv), burn.UT);  // x radial, y normal, z prograde
+                Log($"{vessel.vesselName}: {burn.Log}");
+                _executor = new NodeExecutor(vessel, _formatTime, precise: true);
+            }
+
+            var r = _executor.Tick();
+            Status = _executor.Status;
+            if (r == NodeExecutor.Result.Failed) { Fail(_executor.Error); return; }
+            if (r != NodeExecutor.Result.Done) return;
+            _executor = null;
+            _state.BurnsDone++;
+            AdvanceStage(i, now);
+            _state.Current = -1;
+        }
+
+        private void AdvanceStage(int i, double now)
+        {
+            var before = _state.Stage[i];
+            _state.Advance(i, StationKeeping.PhaseOk(SlotError(i, now)));
+            if (before == CorrectionStage.Trim && _state.Stage[i] == CorrectionStage.Phase)
+                Log($"{Name(i)} is still {SlotError(i, now):+0.00;-0.00}° off its slot: phasing again.");
+            if (_state.Stage[i] == CorrectionStage.Done)
+                Log($"{Name(i)} done: {SlotError(i, now):+0.00;-0.00}° from its slot, " +
+                    $"drift {Drift(i):+0.000;-0.000}°/orbit.");
+        }
+
+        // ── Burns ────────────────────────────────────────────────────────────
+
+        private sealed class Burn
+        {
+            public Burn(double ut, double dv, string log) { UT = ut; Dv = dv; Log = log; }
+            public double UT  { get; }
+            public double Dv  { get; }
+            public string Log { get; }
+        }
+
+        // The burn satellite i's current stage needs, or null when it needs none (the
+        // caller advances the stage). commit: this burn is about to be flown (records
+        // the phasing orbit and logs skips).
+        private Burn? Plan(int i, Orbit o, double now, bool commit)
+        {
+            double mu = o.referenceBody.gravParameter, a = _state.TargetSma;
+            switch (_state.Stage[i])
+            {
+                case CorrectionStage.Transfer:
                 {
-                    if (!StationKeeping.NeedsTransfer(o.ApR, o.PeR, _targetSma))
-                        return Skip("Close to the target orbit: no circularization needed.");
-                    bool atAp = Math.Abs(o.ApR - _targetSma) <= Math.Abs(o.PeR - _targetSma);
+                    if (!StationKeeping.NeedsTransfer(o.ApR, o.PeR, a)) return Skip(commit, "close to the target orbit, no transfer.");
+                    var t = _transfer.Plan(mu, o.ApR, o.PeR, a);
+                    double ut = _planner.NextPassUT(now, t.FirstBurnAt == Apsis.Periapsis ? o.timeToPe : o.timeToAp,
+                                                    o.period, MinNodeLead);
+                    return Make(commit, ut, t.FirstDv,
+                                $"transfer burn, {t.FirstDv:F2} m/s at {t.FirstBurnAt.ToString().ToLowerInvariant()}.");
+                }
+                case CorrectionStage.Circularize:
+                {
+                    if (!StationKeeping.NeedsTransfer(o.ApR, o.PeR, a)) return Skip(commit, "close to the target orbit, no circularization.");
+                    bool atAp = Math.Abs(o.ApR - a) <= Math.Abs(o.PeR - a);
                     double ut = _planner.NextPassUT(now, atAp ? o.timeToAp : o.timeToPe, o.period, MinNodeLead);
                     double dv = _planner.CircularizeAt(mu, atAp ? o.ApR : o.PeR, o.semiMajorAxis);
-                    return Add(solver, ut, dv, $"Circularize: {dv:F2} m/s at {(atAp ? "apoapsis" : "periapsis")}.");
+                    return Make(commit, ut, dv, $"circularize, {dv:F2} m/s at {(atAp ? "apoapsis" : "periapsis")}.");
                 }
-                case Kind.Phase:
+                case CorrectionStage.Phase:
                 {
                     double ut = now + NodeLead;
-                    double error = FitAt(ut).ErrorsDeg[_active];
-                    if (StationKeeping.PhaseOk(error))
-                        return Skip($"{error:+0.00;-0.00}° from its slot: no phasing needed.");
+                    double error = ErrorAt(i, o, ut);
+                    if (StationKeeping.PhaseOk(error)) return Skip(commit, $"{error:+0.00;-0.00}° from its slot, no phasing.");
                     double r = o.getRelativePositionAtUT(ut).magnitude;
-                    var p = _phasing.Choose(mu, r, o.semiMajorAxis, _targetSma, error, _minRadius, _maxRadius, _minOrbits);
+                    // The quickest safe phasing whose return doesn't fall on another
+                    // satellite's: one of them would miss its pass and over-correct.
+                    PhasingPlan? p = null;
+                    for (int k = _state.MinOrbits; k <= StationKeeping.MaxPhasingOrbits; k = p.Orbits + 1)
+                    {
+                        p = _phasing.Choose(mu, r, o.semiMajorAxis, a, error, _state.MinRadius, _state.MaxRadius, k);
+                        if (p == null || !ReturnClashes(i, ut + p.Duration)) break;
+                    }
                     if (p == null)
                     {
-                        Fail($"No safe phasing orbit for {error:F1}° within {StationKeeping.MaxPhasingOrbits} orbits.");
-                        return false;
+                        Fail($"{Name(i)}: no safe phasing orbit for {error:F1}° within {StationKeeping.MaxPhasingOrbits} orbits.");
+                        return null;
                     }
-                    _phaseUT = ut;
-                    _phaseOrbits = p.Orbits;
-                    return Add(solver, ut, p.FirstDv,
-                               $"Phasing: {error:+0.00;-0.00}° off its slot, removing {p.ErrorDeg:F2}° in " +
-                               $"{p.Orbits} orbit(s) of {_formatTime(p.Period)} (other apsis " +
-                               $"{(p.OtherApsisRadius - o.referenceBody.Radius) / 1000.0:F1} km): {p.FirstDv:F2} m/s.");
+                    if (commit)
+                    {
+                        _state.PhaseUT[i] = ut;
+                        _state.PhaseOrbits[i] = p.Orbits;
+                    }
+                    return Make(commit, ut, p.FirstDv,
+                                $"phasing, {error:+0.00;-0.00}° off its slot, removing {p.ErrorDeg:F2}° in {p.Orbits} " +
+                                $"orbit(s) of {_formatTime(p.Period)} (other apsis " +
+                                $"{(p.OtherApsisRadius - o.referenceBody.Radius) / 1000.0:F1} km): {p.FirstDv:F3} m/s.");
                 }
-                case Kind.PhaseReturn:
+                case CorrectionStage.PhaseReturn:
                 {
-                    if (double.IsNaN(_phaseUT)) return Skip("No phasing orbit to come back from.");
-                    // Back at the first burn's point after the phasing orbits.
-                    double ut = _phaseUT + _phaseOrbits * o.period;
-                    if (ut < now + MinNodeLead) { Fail("Missed the end of the phasing orbit."); return false; }
+                    if (double.IsNaN(_state.PhaseUT[i])) return Skip(commit, "no phasing orbit to come back from.");
+                    // Back at the first burn's point after the phasing orbits; when that
+                    // pass was missed (another satellite's burn), the next one.
+                    double ut = _state.PhaseUT[i] + _state.PhaseOrbits[i] * o.period;
+                    while (ut < now + MinNodeLead) ut += o.period;
                     double r = o.getRelativePositionAtUT(ut).magnitude;
-                    double dv = _phasing.TrimDv(mu, r, o.semiMajorAxis, _targetSma);
-                    return Add(solver, ut, dv, $"End of phasing: {dv:F3} m/s, back to the target period.");
+                    double dv = _phasing.TrimDv(mu, r, o.semiMajorAxis, a);
+                    return Make(commit, ut, dv, $"end of phasing, {dv:F3} m/s back to the target period.");
                 }
-                default:  // Trim
+                case CorrectionStage.Trim:
                 {
-                    double target = TargetPeriod(mu);
-                    if (StationKeeping.PeriodOk(o.period, target))
-                        return Skip($"Period within {StationKeeping.PeriodToleranceRel:P2} of the target: no trim needed.");
+                    if (StationKeeping.PeriodOk(o.period, _state.TargetPeriod))
+                        return Skip(commit, $"period within {StationKeeping.PeriodToleranceRel:P2} of the target, no trim.");
                     double ut = now + NodeLead;
-                    double r = o.getRelativePositionAtUT(ut).magnitude;
-                    double dv = _phasing.TrimDv(mu, r, o.semiMajorAxis, _targetSma);
-                    return Add(solver, ut, dv, $"Period trim: {o.period - target:+0.0;-0.0} s off, {dv:F3} m/s.");
+                    double dv = _phasing.TrimDv(mu, o.getRelativePositionAtUT(ut).magnitude, o.semiMajorAxis, a);
+                    return Make(commit, ut, dv,
+                                $"period trim, {o.period - _state.TargetPeriod:+0.0;-0.0} s off, {dv:F3} m/s.");
                 }
+                default:
+                    return null;
             }
-        }
 
-        private bool Add(PatchedConicSolver solver, double ut, double dv, string log)
-        {
-            if (Math.Abs(dv) < MinBurn) return Skip(log + " Too small to fly: skipped.");
-            var node = solver.AddManeuverNode(ut);
-            node.OnGizmoUpdated(new Vector3d(0.0, 0.0, dv), ut);  // x radial, y normal, z prograde
-            Log(log);
-            return true;
-        }
+            Burn? Make(bool log, double ut, double dv, string text)
+            {
+                if (Math.Abs(dv) < MinBurn) return Skip(log, text + " Too small to fly: skipped.");
+                return new Burn(ut, dv, text);
+            }
 
-        private static bool Skip(string why)
-        {
-            Log(why);
-            return false;
+            Burn? Skip(bool log, string why)
+            {
+                if (log) Log($"{Name(i)}: {why}");
+                return null;
+            }
         }
 
         // ── Helpers ──────────────────────────────────────────────────────────
 
-        private SlotFit FitAt(double ut) =>
-            StationKeeping.Fit(_members.Select(v => MeanLongitude.At(v.orbit, ut)).ToList(), _slots,
-                               _reference, _reference.HasValue ? (int?)null : _active);
+        // Too close to another satellite's phasing return to fly both.
+        private bool ReturnClashes(int i, double ut)
+        {
+            for (int j = 0; j < _state.Members.Length; ++j)
+            {
+                if (j == i || _state.Stage[j] != CorrectionStage.PhaseReturn || double.IsNaN(_state.PhaseUT[j])) continue;
+                var v = Member(j);
+                if (v == null) continue;
+                double other = _state.PhaseUT[j] + _state.PhaseOrbits[j] * v.orbit.period;
+                if (Math.Abs(other - ut) < ReturnGap) return true;
+            }
+            return false;
+        }
 
-        private double TargetPeriod(double mu) => 2.0 * Math.PI * Math.Sqrt(_targetSma * _targetSma * _targetSma / mu);
+        private Vessel? Member(int i)
+        {
+            uint id = _state.Members[i];
+            return FlightGlobals.Vessels.FirstOrDefault(v => v != null && v.persistentId == id);
+        }
 
-        private double Drift(Orbit o) =>
-            StationKeeping.DriftDegPerOrbit(o.period, TargetPeriod(o.referenceBody.gravParameter));
+        private string Name(int i) => Member(i)?.vesselName ?? $"satellite {_state.Members[i]}";
+
+        private double ErrorAt(int i, Orbit o, double ut) =>
+            _state.Frame.ErrorDeg(MeanLongitude.At(o, ut), _state.SlotOf[i], ut);
+
+        private double SlotError(int i, double ut)
+        {
+            var v = Member(i);
+            return v == null ? double.NaN : ErrorAt(i, v.orbit, ut);
+        }
+
+        private double Drift(int i)
+        {
+            var v = Member(i);
+            return v == null ? double.NaN : StationKeeping.DriftDegPerOrbit(v.orbit.period, _state.TargetPeriod);
+        }
 
         private void Fail(string error)
         {
             Stop();
             State = RunState.Failed;
             Error = error;
-            Status = $"Stopped at step {Step}/{Steps} ({CurrentStep}): {error}";
+            Status = "Stopped" + (CurrentStep.Length > 0 ? $" ({CurrentStep})" : "") + ": " + error;
             Log(Status);
         }
 
@@ -245,13 +371,14 @@ namespace RelayOrbiter.Plugin
             if (TimeWarp.CurrentRateIndex > 0) TimeWarp.SetRate(0, true, false);
         }
 
-        private static string Describe(Kind k) => k switch
+        private static string Describe(CorrectionStage s) => s switch
         {
-            Kind.Transfer    => "Transfer towards the target orbit",
-            Kind.Circularize => "Circularize at the target orbit",
-            Kind.Phase       => "Phasing burn: drift back to the slot",
-            Kind.PhaseReturn => "End of phasing: back to the target period",
-            _                => "Trim the period",
+            CorrectionStage.Transfer    => "transfer towards the target orbit",
+            CorrectionStage.Circularize => "circularize at the target orbit",
+            CorrectionStage.Phase       => "phasing burn",
+            CorrectionStage.PhaseReturn => "end of phasing",
+            CorrectionStage.Trim        => "period trim",
+            _                           => "done",
         };
 
         private static void Log(string text) => Debug.Log("[RelayOrbiter] " + text);

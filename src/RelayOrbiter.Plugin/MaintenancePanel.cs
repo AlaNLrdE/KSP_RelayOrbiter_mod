@@ -10,7 +10,7 @@ namespace RelayOrbiter.Plugin
 {
     // Flight-only panel: find the active satellite's constellation (suggested from
     // the names, confirmed by the player), show how far each satellite is from its
-    // slot, and put the active one back with MaintenanceRunner.
+    // slot, and put the active one, or all of them, back with MaintenanceRunner.
     internal sealed class MaintenancePanel
     {
         private const float LabelW = 230f;
@@ -28,6 +28,8 @@ namespace RelayOrbiter.Plugin
         private int  _slots = 3;
         private uint _referenceId;                                // 0: best fit
         private int  _minOrbits = 1;
+        private bool _customAltitude;                             // final altitude typed in by the player
+        private string _customKm = "";
         private MaintenanceRunner? _runner;
         private GUIStyle? _ok, _warn, _header;
 
@@ -39,17 +41,40 @@ namespace RelayOrbiter.Plugin
             _phasing    = phasing;
             _planner    = planner;
             _formatTime = formatTime;
+            // What the save file keeps while a correction runs.
+            RelayOrbiterScenario.MaintenanceProvider = () => IsRunning ? _runner!.ToState() : null;
         }
 
         public bool IsRunning => _runner != null && _runner.State == MaintenanceRunner.RunState.Running;
 
-        public void Tick()  => _runner?.Tick();
+        // A correction from the save file can be resumed.
+        public bool HasPending => _runner == null && RelayOrbiterScenario.PendingMaintenance != null;
+
+        public void Tick()
+        {
+            // The scene reloaded because the correction switched to a far satellite:
+            // carry on by itself once that satellite is the active vessel.
+            var pending = RelayOrbiterScenario.PendingMaintenance;
+            var active = FlightGlobals.ActiveVessel;
+            if (_runner == null && pending != null && pending.Current >= 0 && active != null &&
+                active.persistentId == pending.Members[pending.Current])
+                Resume(pending);
+            _runner?.Tick();
+        }
+
         public void Abort() => _runner?.Abort();
+
+        private void Resume(MaintenanceState state)
+        {
+            RelayOrbiterScenario.PendingMaintenance = null;
+            _runner = new MaintenanceRunner(state, true, _transfer, _phasing, _planner, _formatTime);
+        }
 
         public void Draw(Body body)
         {
             if (_ok == null) CreateStyles();
             if (_runner != null) { DrawRunner(); return; }
+            if (RelayOrbiterScenario.PendingMaintenance is { } pending) { DrawResume(pending); return; }
 
             var vessel = FlightGlobals.ActiveVessel;
             if (vessel == null) { Warn("No active vessel."); return; }
@@ -113,23 +138,41 @@ namespace RelayOrbiter.Plugin
                     ? Short(members[reference.Value].vesselName) + " (stays put)"
                     : "best fit of the others")))
                 NextReference(members);
+            if (!DrawFinalAltitude(body, members, reference, active)) return;
             Row("Target orbit", $"{Km(targetSma - vessel.mainBody.Radius)}, period {_formatTime(targetPeriod)}");
 
-            // ── The active satellite ──
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Phasing orbits (at least)", GUILayout.Width(LabelW));
+            if (GUILayout.Button("−", GUILayout.Width(24f))) _minOrbits--;
+            _minOrbits = Mathf.Clamp(_minOrbits, 1, StationKeeping.MaxPhasingOrbits);
+            GUILayout.Label(_minOrbits.ToString(CultureInfo.InvariantCulture), GUILayout.Width(24f));
+            if (GUILayout.Button("+", GUILayout.Width(24f))) _minOrbits++;
+            _minOrbits = Mathf.Clamp(_minOrbits, 1, StationKeeping.MaxPhasingOrbits);
+            GUILayout.Label("(more: slower, less Δv)");
+            GUILayout.EndHorizontal();
+
+            DrawActive(body, vessel, members, active, reference, fit!, targetSma, targetPeriod, now);
+            DrawWhole(body, members, reference, now);
+        }
+
+        // ── Correct the active satellite ─────────────────────────────────────
+
+        private void DrawActive(Body body, Vessel vessel, List<Vessel> members, int active, int? reference,
+                                SlotFit fit, double targetSma, double targetPeriod, double now)
+        {
             GUILayout.Label($"Correct {Short(vessel.vesselName)}", _header);
             if (active < 0) { Warn("The active vessel is not ticked as a member."); return; }
-            if (reference == active) { Warn("The active vessel is the reference: it stays put. Pick another reference."); return; }
+            if (reference == active) { Warn("The active vessel is the reference: it stays put."); return; }
             var solver = vessel.patchedConicSolver;
             if (solver == null) { Warn("Maneuver nodes are not available yet."); return; }
             if (solver.maneuverNodes.Count > 0) { Warn("Delete the vessel's maneuver nodes first."); return; }
 
             var o = vessel.orbit;
-            double error = fit!.ErrorsDeg[active];
+            double mu = vessel.mainBody.gravParameter;
+            double error = fit.ErrorsDeg[active];
             var transfer = _transfer.Plan(mu, o.ApR, o.PeR, targetSma);
             bool transferNeeded = StationKeeping.NeedsTransfer(o.ApR, o.PeR, targetSma);
-            // A trim smaller than a precise burn can fly is as good as it gets.
-            bool periodOk = StationKeeping.PeriodOk(o.period, targetPeriod) ||
-                            Math.Abs(_phasing.TrimDv(mu, o.radius, o.semiMajorAxis, targetSma)) < 2 * NodeBurn.PreciseDv;
+            bool periodOk = PeriodOk(o, targetSma, targetPeriod);
             bool phaseOk = StationKeeping.PhaseOk(error);
             Row("Off its slot", $"{error:+0.00;-0.00}°", phaseOk ? _ok : _warn);
             Row("Period", $"{o.period - targetPeriod:+0.0;-0.0} s from the target " +
@@ -145,15 +188,6 @@ namespace RelayOrbiter.Plugin
             }
             else if (!phaseOk)
             {
-                GUILayout.BeginHorizontal();
-                GUILayout.Label("Phasing orbits (at least)", GUILayout.Width(LabelW));
-                if (GUILayout.Button("−", GUILayout.Width(24f))) _minOrbits--;
-                _minOrbits = Mathf.Clamp(_minOrbits, 1, StationKeeping.MaxPhasingOrbits);
-                GUILayout.Label(_minOrbits.ToString(CultureInfo.InvariantCulture), GUILayout.Width(24f));
-                if (GUILayout.Button("+", GUILayout.Width(24f))) _minOrbits++;
-                _minOrbits = Mathf.Clamp(_minOrbits, 1, StationKeeping.MaxPhasingOrbits);
-                GUILayout.EndHorizontal();
-
                 var p = _phasing.Choose(mu, o.radius, o.semiMajorAxis, targetSma, error,
                                         PhasingPlanner.MinRadius(body), MaxRadius(body), _minOrbits);
                 if (p == null) { Warn("No safe phasing orbit within " + StationKeeping.MaxPhasingOrbits + " orbits."); return; }
@@ -184,15 +218,87 @@ namespace RelayOrbiter.Plugin
             if (time > 0.0) Row("Takes about", _formatTime(time));
 
             if (GUILayout.Button("Correct this satellite"))
-                _runner = new MaintenanceRunner(vessel, members, _slots, reference, targetSma,
-                                                PhasingPlanner.MinRadius(body), MaxRadius(body), _minOrbits,
-                                                _transfer, _phasing, _planner, _formatTime);
+            {
+                var state = Start(body, members, fit, now, targetSma, targetPeriod, reference);
+                for (int i = 0; i < members.Count; ++i)
+                    if (i != active) state.Stage[i] = CorrectionStage.Done;
+                _runner = new MaintenanceRunner(state, false, _transfer, _phasing, _planner, _formatTime);
+            }
+        }
+
+        // ── Correct every satellite ──────────────────────────────────────────
+
+        private void DrawWhole(Body body, List<Vessel> members, int? reference, double now)
+        {
+            GUILayout.Label("Correct the whole constellation", _header);
+            double mu = body.Mu;
+            // Every satellite counts for the best fit here: they all move.
+            double targetSma = TargetSma(body, members, reference, -1);
+            double targetPeriod = _mechanics.OrbitalPeriod(targetSma, mu);
+            var fit = StationKeeping.Fit(members.Select(v => MeanLongitude.At(v.orbit, now)).ToList(), _slots, reference);
+            var off = Enumerable.Range(0, members.Count)
+                .Where(i => i != reference &&
+                            (!StationKeeping.PhaseOk(fit.ErrorsDeg[i]) ||
+                             StationKeeping.NeedsTransfer(members[i].orbit.ApR, members[i].orbit.PeR, targetSma) ||
+                             !PeriodOk(members[i].orbit, targetSma, targetPeriod)))
+                .ToList();
+            Row("Target orbit", $"{Km(targetSma - body.Radius)}, period {_formatTime(targetPeriod)}");
+            Row("Largest slot error", $"{fit.ErrorsDeg.Max(e => Math.Abs(e)):F2}°");
+            if (off.Count == 0)
+            {
+                GUILayout.Label("Every satellite is in its slot, on the target period: nothing to correct.", _ok);
+                return;
+            }
+            Row("To correct", string.Join(", ", off.Select(i => $"{Short(members[i].vesselName)} " +
+                                                                $"{fit.ErrorsDeg[i]:+0.0;-0.0}°")));
+            GUILayout.Label("They phase in parallel: it switches to each satellite when its burn is due " +
+                            "(far ones reload the scene and it carries on by itself). Don't switch vessels until it " +
+                            "says the constellation is corrected.", _warn);
+            if (GUILayout.Button("Correct the whole constellation"))
+            {
+                var state = Start(body, members, fit, now, targetSma, targetPeriod, reference);
+                for (int i = 0; i < members.Count; ++i)
+                    if (!off.Contains(i)) state.Stage[i] = CorrectionStage.Done;
+                _runner = new MaintenanceRunner(state, false, _transfer, _phasing, _planner, _formatTime);
+            }
+        }
+
+        private MaintenanceState Start(Body body, List<Vessel> members, SlotFit fit, double now, double targetSma,
+                                       double targetPeriod, int? reference) =>
+            MaintenanceState.Start(members.Select(v => v.persistentId).ToList(), fit, now, targetSma, targetPeriod,
+                                   reference, _minOrbits, PhasingPlanner.MinRadius(body), MaxRadius(body));
+
+        // On the target period, or closer than a precise burn can trim.
+        private bool PeriodOk(Orbit o, double targetSma, double targetPeriod) =>
+            StationKeeping.PeriodOk(o.period, targetPeriod) ||
+            Math.Abs(_phasing.TrimDv(o.referenceBody.gravParameter, o.radius, o.semiMajorAxis, targetSma)) <
+            2 * NodeBurn.PreciseDv;
+
+        private void DrawResume(MaintenanceState pending)
+        {
+            int left = pending.Stage.Count(st => st != CorrectionStage.Done);
+            GUILayout.Label("Interrupted constellation correction", _header);
+            GUILayout.Label($"{left} of {pending.Members.Length} satellites still to correct. It carries on from " +
+                            "where it was, with the slots it started with.", _ok);
+            if (GUILayout.Button("Resume correction")) Resume(pending);
+            if (GUILayout.Button("Discard it"))
+            {
+                Debug.Log("[RelayOrbiter] Interrupted constellation correction discarded.");
+                RelayOrbiterScenario.PendingMaintenance = null;
+            }
         }
 
         private void DrawRunner()
         {
             var r = _runner!;
-            GUILayout.Label($"Step {r.Step}/{r.Steps}: {r.CurrentStep}", _header);
+            GUILayout.Label(r.State == MaintenanceRunner.RunState.Running
+                ? $"Alignment in progress: {r.BurnsDone} of ~{r.BurnsEstimate} burns done ({r.Progress:P0})"
+                : "Constellation correction", _header);
+            if (r.State == MaintenanceRunner.RunState.Running)
+            {
+                GUILayout.Label($"{r.Remaining} satellite(s) still to correct. Now: {r.CurrentStep}");
+                foreach (var line in r.Upcoming) GUILayout.Label("  " + line);
+            }
             GUILayout.Label(r.Status, r.State == MaintenanceRunner.RunState.Running ||
                                       r.State == MaintenanceRunner.RunState.Done ? _ok : _warn);
             if (r.State == MaintenanceRunner.RunState.Running)
@@ -256,8 +362,55 @@ namespace RelayOrbiter.Plugin
             _referenceId = i + 1 < members.Count ? members[i + 1].persistentId : 0;
         }
 
+        // Suggested or typed in. False when the typed altitude can't be used.
+        private bool DrawFinalAltitude(Body body, List<Vessel> members, int? reference, int active)
+        {
+            if (reference.HasValue)
+            {
+                Row("Final altitude", "the reference's (it stays put)");
+                return true;
+            }
+            double suggested = SuggestedSma(body, members, null, active) - body.Radius;
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Final altitude", GUILayout.Width(LabelW));
+            int mode = GUILayout.Toolbar(_customAltitude ? 1 : 0, new[] { "Suggested", "Custom" });
+            GUILayout.EndHorizontal();
+            if (mode == 1 && !_customAltitude)
+                _customKm = (suggested / 1000.0).ToString("F0", CultureInfo.InvariantCulture);
+            _customAltitude = mode == 1;
+            if (!_customAltitude) return true;
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Altitude [km]", GUILayout.Width(LabelW));
+            _customKm = GUILayout.TextField(_customKm, GUILayout.Width(120f));
+            GUILayout.EndHorizontal();
+            Row("Suggested", Km(suggested));
+            if (CustomSma(body) == null)
+            {
+                Warn($"Enter an altitude between {Km(PhasingPlanner.MinRadius(body) - body.Radius)} and " +
+                     (body.Soi.HasValue ? Km(body.Soi.Value - body.Radius) + " (the SOI)." : "the SOI."));
+                return false;
+            }
+            return true;
+        }
+
+        // The typed-in final orbit's semi-major axis, when valid.
+        private double? CustomSma(Body body)
+        {
+            if (!_customAltitude ||
+                !double.TryParse(_customKm, NumberStyles.Float, CultureInfo.InvariantCulture, out double km))
+                return null;
+            double r = body.Radius + km * 1000.0;
+            return r >= PhasingPlanner.MinRadius(body) && r < MaxRadius(body) ? r : (double?)null;
+        }
+
+        // The final orbit: the reference's when there is one, else typed in, else suggested.
+        private double TargetSma(Body body, List<Vessel> members, int? reference, int active) =>
+            !reference.HasValue && CustomSma(body) is double custom ? custom
+                                                                   : SuggestedSma(body, members, reference, active);
+
         // Synchronous when the constellation's names say so.
-        private double TargetSma(Body body, List<Vessel> members, int? reference, int active)
+        private double SuggestedSma(Body body, List<Vessel> members, int? reference, int active)
         {
             if (members.Count == 0) return FlightGlobals.ActiveVessel.orbit.semiMajorAxis;
             bool sync = members.Any(v => ConstellationName.Parse(v.vesselName)?.Tag.StartsWith("SYNC", StringComparison.Ordinal) == true);
