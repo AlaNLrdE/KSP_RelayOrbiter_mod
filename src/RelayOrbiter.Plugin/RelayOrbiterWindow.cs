@@ -9,7 +9,7 @@ using Body = RelayOrbiter.Core.CelestialBody;
 namespace RelayOrbiter.Plugin
 {
     // IMGUI window (flight only): target altitude around the body the active vessel
-    // orbits, the deployment plan, and the Maneuvers and Automation tabs.
+    // orbits, the deployment plan, and the Maneuvers, Automation and Maintenance tabs.
     // All orbital logic lives in RelayOrbiter.Core; this class only draws state.
     internal sealed class RelayOrbiterWindow
     {
@@ -24,6 +24,7 @@ namespace RelayOrbiter.Plugin
         private readonly ConstellationSettings    _settings;
         private readonly ManeuversPanel           _maneuvers;
         private readonly AutomationPanel          _automation;
+        private readonly MaintenancePanel         _maintenance;
         private readonly Action                   _onClose;
 
         private Rect    _rect = new Rect(240f, 120f, Width, 200f);
@@ -31,14 +32,15 @@ namespace RelayOrbiter.Plugin
         private AltitudeSource _source = AltitudeSource.Synchronous;
         private int     _child, _midA, _midB = 1;
         private string  _customKm = "1000";
-        private int     _tab;  // 0 = results, 1 = maneuvers, 2 = automation
+        private int     _tab;  // 0 = results, 1 = maneuvers, 2 = automation, 3 = maintenance
 
         private GUIStyle? _ok, _warn, _header;
 
         public RelayOrbiterWindow(IBodyDatabase db, IAltitudePlanner planner,
                                   IConstellationCalculator calculator,
                                   Func<double, string> formatTime, ConstellationSettings settings,
-                                  ManeuversPanel maneuvers, AutomationPanel automation, Action onClose)
+                                  ManeuversPanel maneuvers, AutomationPanel automation,
+                                  MaintenancePanel maintenance, Action onClose)
         {
             _settings   = settings;
             _db         = db;
@@ -47,18 +49,28 @@ namespace RelayOrbiter.Plugin
             _formatTime = formatTime;
             _maneuvers  = maneuvers;
             _automation = automation;
+            _maintenance = maintenance;
             _onClose    = onClose;
         }
 
         public bool Visible { get; set; }
 
         // Runs the automation every frame, even while the window is hidden.
-        public void Tick()  => _automation.Tick();
-        public void Abort() => _automation.Abort();
+        public void Tick()
+        {
+            _automation.Tick();
+            _maintenance.Tick();
+        }
+
+        public void Abort()
+        {
+            _automation.Abort();
+            _maintenance.Abort();
+        }
 
         public Rect Rect => _rect;
         public Vector2 Position { get => _rect.position; set => _rect.position = value; }
-        public int Tab { get => _tab; set => _tab = Mathf.Clamp(value, 0, 2); }
+        public int Tab { get => _tab; set => _tab = Mathf.Clamp(value, 0, 3); }
 
         public void Draw()
         {
@@ -80,14 +92,25 @@ namespace RelayOrbiter.Plugin
             }
             var body = _body!;
 
-            DrawSatelliteCount();
-            var option = DrawAltitudeSelector(body);
-            GUILayout.Space(6f);
-
             if (_automation.IsRunning || _automation.IsLaunching || _automation.HasPending) _tab = 2;
-            _tab = GUILayout.Toolbar(_tab, new[] { "Results", "Maneuvers", "Automation" });
+            if (_maintenance.IsRunning) _tab = 3;
 
-            if (_tab == 1)
+            // The satellite count and target altitude are for a new deployment.
+            AltitudeOption? option = null;
+            if (_tab != 3)
+            {
+                DrawSatelliteCount();
+                option = DrawAltitudeSelector(body);
+                GUILayout.Space(6f);
+            }
+
+            _tab = GUILayout.Toolbar(_tab, new[] { "Results", "Maneuvers", "Automation", "Maintenance" });
+            if (_automation.IsRunning || _automation.IsLaunching || _automation.HasPending) _tab = 2;
+            if (_maintenance.IsRunning) _tab = 3;
+
+            if (_tab == 3)
+                _maintenance.Draw(body);
+            else if (_tab == 1)
                 _maneuvers.Draw(body, option != null && option.IsValid ? option.Altitude : (double?)null);
             else if (_tab == 2)
                 _automation.Draw(body, option != null && option.IsValid ? option.Altitude : (double?)null,

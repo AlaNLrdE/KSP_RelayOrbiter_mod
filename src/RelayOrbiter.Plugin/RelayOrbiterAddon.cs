@@ -108,6 +108,8 @@ namespace RelayOrbiter.Plugin
                 db, altitudes, calculator, formatTime, _settings,
                 new ManeuversPanel(deployment, altitudes, calculator, _settings, formatTime),
                 new AutomationPanel(deployment, altitudes, calculator, _settings, new TransferPlanner(mechanics), formatTime),
+                new MaintenancePanel(mechanics, new TransferPlanner(mechanics), new PhasingPlanner(mechanics),
+                                     deployment, formatTime),
                 CloseWindow);
             LoadSettings(window);
             return window;

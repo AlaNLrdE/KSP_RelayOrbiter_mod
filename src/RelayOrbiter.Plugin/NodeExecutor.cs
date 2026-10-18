@@ -19,7 +19,7 @@ namespace RelayOrbiter.Plugin
 
         private readonly Vessel _vessel;
         private readonly Func<double, string> _formatTime;
-        private readonly NodeBurn _burn = new NodeBurn();
+        private readonly NodeBurn _burn;
         private VesselAutopilot.AutopilotMode? _mode;
         private bool _burning, _attached, _tail, _thrusted;
         private readonly Warp _warp = new Warp();
@@ -35,9 +35,11 @@ namespace RelayOrbiter.Plugin
         // so the prograde/retrograde SAS fallback would point the wrong way.
         // protectedParts: when set, a spent stage may be staged away, as long as the next
         // stage holds none of these parts (the satellites still on board).
+        // precise: stop at NodeBurn.PreciseDv instead of NodeBurn.DoneDv.
         public NodeExecutor(Vessel vessel, Func<double, string> formatTime, bool maneuverModeRequired = false,
-                            ISet<uint>? protectedParts = null)
+                            ISet<uint>? protectedParts = null, bool precise = false)
         {
+            _burn = new NodeBurn(precise ? NodeBurn.PreciseDv : NodeBurn.DoneDv);
             _vessel = vessel;
             _formatTime = formatTime;
             _maneuverModeRequired = maneuverModeRequired;
@@ -151,7 +153,7 @@ namespace RelayOrbiter.Plugin
 
             _throttle = (float)NodeBurn.Throttle(dvLeft, accel, angle);
             if (_throttle > 0f) _thrusted = true;
-            Status = $"Burning: {dvLeft:F1} m/s left, {angle:F1}° off" + (_tail ? " (holding attitude)" : "");
+            Status = $"Burning: {dvLeft.ToString(dvLeft < 1.0 ? "F3" : "F1")} m/s left, {angle:F1}° off" + (_tail ? " (holding attitude)" : "");
             return Result.Running;
         }
 
