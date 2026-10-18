@@ -1,0 +1,158 @@
+namespace RelayOrbiter.Core.Tests;
+
+public class MaintenanceStateTests
+{
+    private static MaintenanceState Sample(int? reference = null)
+    {
+        var fit = StationKeeping.Fit(new[] { 0.0, 125.0, 240.0 }, 3);
+        return MaintenanceState.Start(new uint[] { 11, 22, 33 }, fit, 1000.0, 2_200_000.0, 80_335.0,
+                                      reference, 2, 230_000.0, double.MaxValue);
+    }
+
+    // ── Frame ─────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void SlotsAdvanceAtTheTargetPeriod()
+    {
+        var f = new SlotFrame(3, 10.0, 0.0, 1000.0);
+        Precision.Close(10.0, f.SlotLongitudeDeg(0, 0.0), "start");
+        Precision.Close(100.0, f.SlotLongitudeDeg(0, 250.0), "quarter orbit");
+        Precision.Close(220.0, f.SlotLongitudeDeg(1, 250.0), "next slot");
+        Precision.Close(10.0, f.SlotLongitudeDeg(0, 3000.0), "whole orbits");
+    }
+
+    [Fact]
+    public void ErrorIsAgainstTheMovingSlot()
+    {
+        var f = new SlotFrame(4, 0.0, 0.0, 1000.0);
+        // A quarter orbit later slot 1 is at 180°; a satellite at 185° is 5° ahead.
+        Precision.Close(5.0, f.ErrorDeg(185.0, 1, 250.0), "ahead");
+        Precision.Close(-5.0, f.ErrorDeg(175.0, 1, 250.0), "behind");
+    }
+
+    [Fact]
+    public void ASatelliteOnTheTargetPeriodKeepsItsError()
+    {
+        var f = new SlotFrame(3, 0.0, 0.0, 1000.0);
+        double Lon(double t) => 7.0 + 360.0 * t / 1000.0;  // 7° ahead of slot 0, same period
+        Precision.Close(7.0, f.ErrorDeg(Lon(0.0), 0, 0.0), "now");
+        Precision.Close(7.0, f.ErrorDeg(Lon(12_345.0), 0, 12_345.0), "later");
+    }
+
+    // ── State ─────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void StartsEverySatelliteAtTheTransferStage()
+    {
+        var s = Sample();
+        Assert.All(s.Stage, st => Assert.Equal(CorrectionStage.Transfer, st));
+        Assert.All(s.PhaseUT, ut => Assert.True(double.IsNaN(ut)));
+        Assert.False(s.AllDone);
+    }
+
+    [Fact]
+    public void TheReferenceIsDoneFromTheStart()
+    {
+        var s = Sample(reference: 0);
+        Assert.Equal(CorrectionStage.Done, s.Stage[0]);
+        Assert.Equal(CorrectionStage.Transfer, s.Stage[1]);
+    }
+
+    [Fact]
+    public void StagesGoInOrder()
+    {
+        var s = Sample();
+        var seen = new List<CorrectionStage>();
+        while (s.Stage[1] != CorrectionStage.Done)
+        {
+            seen.Add(s.Stage[1]);
+            s.Advance(1, phaseOk: true);
+        }
+        Assert.Equal(new[] { CorrectionStage.Transfer, CorrectionStage.Circularize, CorrectionStage.Phase,
+                             CorrectionStage.PhaseReturn, CorrectionStage.Trim }, seen);
+    }
+
+    [Fact]
+    public void PhasesAgainOnceWhenStillOffAfterTheTrim()
+    {
+        var s = Sample();
+        s.Stage[1] = CorrectionStage.Phase;
+        s.Advance(1, false);                        // phase → return (attempt 1)
+        s.Advance(1, false);                        // return → trim
+        s.PhaseUT[1] = 5.0;
+        s.Advance(1, phaseOk: false);               // still off: phase again
+        Assert.Equal(CorrectionStage.Phase, s.Stage[1]);
+        Assert.True(double.IsNaN(s.PhaseUT[1]));
+        s.Advance(1, false); s.Advance(1, false);   // attempt 2
+        s.Advance(1, phaseOk: false);               // give up
+        Assert.Equal(CorrectionStage.Done, s.Stage[1]);
+    }
+
+    [Fact]
+    public void AllDoneWhenEveryStageIsDone()
+    {
+        var s = Sample();
+        for (int i = 0; i < 3; ++i) s.Stage[i] = CorrectionStage.Done;
+        Assert.True(s.AllDone);
+    }
+
+    [Fact]
+    public void RoundTripsThroughTheSaveFile()
+    {
+        var s = Sample(reference: 2);
+        s.Stage[1] = CorrectionStage.PhaseReturn;
+        s.PhaseUT[1] = 123_456.789;
+        s.PhaseOrbits[1] = 4;
+        s.Attempts[1] = 1;
+        s.Current = 1;
+        var r = MaintenanceState.FromValues(new Dictionary<string, string>(s.ToValues()));
+        Assert.Equal(s.Members, r.Members);
+        Assert.Equal(s.SlotOf, r.SlotOf);
+        Assert.Equal(s.Stage, r.Stage);
+        Assert.Equal(s.PhaseOrbits, r.PhaseOrbits);
+        Assert.Equal(s.Attempts, r.Attempts);
+        Assert.Equal(1, r.Current);
+        Assert.Equal(2, r.Reference);
+        Assert.Equal(s.OffsetDeg, r.OffsetDeg);
+        Assert.Equal(123_456.789, r.PhaseUT[1]);
+        Assert.True(double.IsNaN(r.PhaseUT[0]));
+        Assert.Equal(double.MaxValue, r.MaxRadius);
+        Assert.Equal(s.TargetPeriod, r.TargetPeriod);
+    }
+
+    [Fact]
+    public void RejectsInconsistentLists()
+    {
+        var v = new Dictionary<string, string>(Sample().ToValues()) { ["Stage"] = "Done" };
+        Assert.Throws<FormatException>(() => MaintenanceState.FromValues(v));
+    }
+
+    [Fact]
+    public void RejectsMissingValues()
+    {
+        var v = new Dictionary<string, string>(Sample().ToValues());
+        v.Remove("Slots");
+        Assert.Throws<FormatException>(() => MaintenanceState.FromValues(v));
+    }
+
+    [Fact]
+    public void ProgressCountsBurnsDoneAgainstThoseThatMayBeLeft()
+    {
+        var s = Sample(reference: 0);           // two satellites to correct, 5 burns each at most
+        Precision.Close(0.0, s.Progress, "start");
+        s.Stage[1] = CorrectionStage.Done;
+        s.BurnsDone = 3;
+        Precision.Close(3.0 / 8.0, s.Progress, "one done");
+        Assert.Equal(8, s.BurnsEstimate);
+        s.Stage[2] = CorrectionStage.Done;
+        Precision.Close(1.0, s.Progress, "all done");
+    }
+
+    [Fact]
+    public void BurnsDoneRoundTrips()
+    {
+        var s = Sample();
+        s.BurnsDone = 7;
+        Assert.Equal(7, MaintenanceState.FromValues(new Dictionary<string, string>(s.ToValues())).BurnsDone);
+    }
+}
