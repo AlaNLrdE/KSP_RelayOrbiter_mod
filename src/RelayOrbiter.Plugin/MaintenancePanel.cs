@@ -288,8 +288,12 @@ namespace RelayOrbiter.Plugin
                 GUILayout.Label("Every satellite is in its slot, on the target period: nothing to correct.", _ok);
                 return;
             }
-            Row("To correct", string.Join(", ", off.Select(i => $"{Short(members[i].vesselName)} " +
-                                                                $"{fit.ErrorsDeg[i]:+0.0;-0.0}°")));
+            // The worst few; the list above has every satellite's error.
+            const int shown = 6;
+            var worst = off.OrderByDescending(i => Math.Abs(fit.ErrorsDeg[i])).Take(shown)
+                           .Select(i => $"{Short(members[i].vesselName)} {fit.ErrorsDeg[i]:+0.0;-0.0}°");
+            Row("To correct", $"{off.Count} satellite(s): " + string.Join(", ", worst) +
+                              (off.Count > shown ? $" and {off.Count - shown} more" : ""));
             GUILayout.Label("They phase in parallel: it switches to each satellite when its burn is due " +
                             "(far ones reload the scene and it carries on by itself). Don't switch vessels until it " +
                             "says the constellation is corrected.", _warn);
