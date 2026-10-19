@@ -2,7 +2,9 @@
 # Builds the RelayOrbiter plugin and copies GameData/RelayOrbiter into the
 # GameData folder of the Steam install of KSP, found automatically.
 #
-# Usage: ./deploy.sh [--no-build] [--dry-run] [KSP_DIR]
+# Usage: ./deploy.sh [-D] [--no-build] [--dry-run] [KSP_DIR]
+#   -D          Debug build: with the [RelayOrbiter][DBG] diagnostic log lines
+#               (without it: the Release build, no debug lines)
 #   --no-build  copy what is already staged in GameData/RelayOrbiter
 #   --dry-run   only show where it would deploy
 #   KSP_DIR     KSP install to use instead of detecting the Steam one
@@ -16,12 +18,14 @@ MOD_DIR="$ROOT/GameData/RelayOrbiter"
 
 build=true
 dry_run=false
+config=Release
 ksp_dir=""
 for arg in "$@"; do
     case "$arg" in
+        -D)         config=Debug ;;
         --no-build) build=false ;;
         --dry-run)  dry_run=true ;;
-        -h|--help)  sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*)         echo "Unknown option: $arg" >&2; exit 2 ;;
         *)          ksp_dir="$arg" ;;
     esac
@@ -98,7 +102,7 @@ fi
 echo "KSP install: $ksp_dir"
 
 if $dry_run; then
-    echo "Dry run: would deploy $MOD_DIR -> $ksp_dir/GameData/RelayOrbiter"
+    echo "Dry run: would deploy the $config build: $MOD_DIR -> $ksp_dir/GameData/RelayOrbiter"
     exit 0
 fi
 
@@ -119,8 +123,8 @@ if $build; then
     # Without KspPaths.props, compile against the install being deployed to.
     extra=()
     [[ -f "$ROOT/KspPaths.props" ]] || extra=("-p:KSPDir=$ksp_dir")
-    echo "Building (Release)..."
-    "$dotnet" build "$ROOT/src/RelayOrbiter.Plugin" -c Release --nologo -v quiet "${extra[@]}"
+    echo "Building ($config)..."
+    "$dotnet" build "$ROOT/src/RelayOrbiter.Plugin" -c "$config" --nologo -v quiet "${extra[@]}"
 fi
 
 shopt -s nullglob
@@ -136,5 +140,5 @@ dest="$ksp_dir/GameData/RelayOrbiter"
 mkdir -p "$dest"
 cp -rf "$MOD_DIR/." "$dest/"
 
-echo "Deployed to $dest:"
+if $build; then echo "Deployed the $config build to $dest:"; else echo "Deployed (already staged build) to $dest:"; fi
 find "$dest" -type f -printf '  %P  (%s bytes, %TY-%Tm-%Td %TH:%TM)\n' | sort
