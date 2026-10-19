@@ -61,4 +61,16 @@ public class AscentStagerTests
         Assert.Equal(StagingDecision.Stage, StagingGuard.Decide(2, new uint[] { 7, 8 }, satellites, 1));
         Assert.Equal(StagingDecision.WouldReleaseSatellite, StagingGuard.Decide(1, new uint[] { 9, 101 }, satellites, 0));
     }
+
+    [Fact]
+    public void ADecouplerThatWouldDropTheSatellitesIsRefused()
+    {
+        // The user's EnginePlate2 in stage 2: none of its own parts are a satellite's,
+        // but firing it cuts loose the satellites hanging on its far side.
+        var satellites = new HashSet<uint> { 101, 102 };
+        Assert.Equal(StagingDecision.WouldReleaseSatellite,
+                     StagingGuard.Decide(2, new uint[] { 7, 8 }, satellites, 0, releasedParts: new uint[] { 50, 101 }));
+        Assert.Equal(StagingDecision.Stage,
+                     StagingGuard.Decide(2, new uint[] { 7, 8 }, satellites, 0, releasedParts: new uint[] { 50, 51 }));
+    }
 }

@@ -227,4 +227,34 @@ public class PartTreeTests
         var c = Assert.Single(new PartTree(parts).Candidates());
         Assert.Equal(new uint[] { 3, 4 }, c.PartIds.OrderBy(i => i));
     }
+
+    [Fact]
+    public void ReleasedByFollowsEachDecouplersFarSide()
+    {
+        var t = new PartTree(Vessel());
+        // Decoupler A leaves with its satellite; decoupler C drops its child's side.
+        Assert.Equal(new uint[] { 10, 11, 12 }, t.ReleasedBy(new uint[] { 10 }).OrderBy(i => i));
+        Assert.Equal(new uint[] { 31, 32 }, t.ReleasedBy(new uint[] { 30 }).OrderBy(i => i));
+        // A tank and an engine release nothing.
+        Assert.Empty(t.ReleasedBy(new uint[] { 2, 3 }));
+    }
+
+    [Fact]
+    public void ACarrierDecouplerCanCutLooseTheSatellites()
+    {
+        // The user's craft: the carrier's engine plate (a decoupler in a carrier stage)
+        // with the satellites hanging on its far side.
+        var parts = new List<PartInfo>
+        {
+            new(1, null, "Carrier core", isCommand: true),
+            new(2, 1,    "Engine plate", SeparatorKind.Decoupler, decouplesFromParent: true),
+            new(3, 2,    "Carrier engine", thrust: 60.0, isp: 345.0, engineActive: true),
+            new(4, 2,    "Port", SeparatorKind.DockingPort),
+            new(5, 4,    "Probe", isCommand: true),
+        };
+        var released = new PartTree(parts).ReleasedBy(new uint[] { 2, 3 });
+        Assert.Contains(5u, released);
+        Assert.Equal(StagingDecision.WouldReleaseSatellite,
+                     StagingGuard.Decide(2, new uint[] { 2, 3 }, new HashSet<uint> { 4, 5 }, 0, released));
+    }
 }
