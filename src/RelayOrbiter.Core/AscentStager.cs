@@ -7,7 +7,8 @@ namespace RelayOrbiter.Core
     // engine gives any for a moment. What may fire is StagingGuard's decision.
     public sealed class AscentStager
     {
-        public const double Delay       = 0.5;   // s without thrust before staging (lets a new stage ignite)
+        public const double Delay       = 1.0;   // s without thrust before staging: lets a new stage ignite,
+                                                 // and KSP ignores a staging too soon after the last one
         public const double MinThrottle = 0.01;  // below this no thrust is wanted (a coast)
 
         private double _noThrustSince = double.NaN;
