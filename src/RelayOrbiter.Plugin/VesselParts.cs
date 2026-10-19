@@ -177,6 +177,17 @@ namespace RelayOrbiter.Plugin
             r.resourceName != "ElectricCharge" && r.info.resourceTransferMode != ResourceTransferMode.NONE;
 
         // Thrust (kN, vacuum) and thrust-weighted Isp (s) of the vessel's running engines.
+        // The stage that fires next and every part it would cut loose (its decouplers'
+        // far sides). vessel.currentStage, not StageManager.CurrentStage: that one can lag
+        // a frame behind right after staging.
+        public static (int stage, List<uint> parts, IReadOnlyCollection<uint> released) NextStage(Vessel vessel)
+        {
+            int next = vessel.currentStage - 1;
+            var parts = vessel.parts.Where(p => p.inverseStage == next).Select(p => p.flightID).ToList();
+            var released = new PartTree(From(vessel)).ReleasedBy(parts);
+            return (next, parts, released);
+        }
+
         // Hold the engines of these parts (the satellites still on board): shut down and
         // disabled, so they stay off even when the stage holding them fires (MechJeb's
         // autostaging, a stray press of the space bar). free: give them back. Returns

@@ -616,7 +616,19 @@ namespace RelayOrbiter.Plugin
                      $"autostaging at stage {stageLimit} so it never fires the satellites, and would never light that " +
                      "engine. Move the satellites' separators and engines to the last stages.");
             else
-                Row("MechJeb autostaging", $"stops at stage {stageLimit} (satellites below)");
+                Row("Staging during the ascent", $"Relay Orbiter's, down to stage {stageLimit} (satellites below)");
+
+            // The carrier's own stages must reach orbit: the satellites' Δv isn't available.
+            double needed = LaunchPlanner.AscentDeltaV(current, launchAlt, inclination);
+            double carrierDv = CarrierAscentDeltaV(vessel, stageLimit);
+            if (!double.IsNaN(carrierDv))
+            {
+                Row("Carrier's Δv to orbit", $"{Ms(carrierDv)} in stages {stageLimit} and up (needs about {Ms(needed)})",
+                    carrierDv >= needed ? _ok : _warn);
+                if (carrierDv < needed)
+                    Warn("The carrier's own stages may not reach orbit: the satellites' fuel can't be used for the ascent. " +
+                         "Add fuel to the carrier, or launch to a lower inclination (a retrograde one costs most).");
+            }
 
             bool wasEnabled = GUI.enabled;
             GUI.enabled = wasEnabled && stagingOk && (!_settings.ChangeInclination || _inclinationValid);
@@ -629,6 +641,7 @@ namespace RelayOrbiter.Plugin
                 _launchProtected.UnionWith(order.SelectMany(c => c.PartIds).Concat(order.Select(c => c.SeparatorId)));
                 _stager = new AscentStager();
                 _stagingStopped = false;
+                _awaitingStage = null;
                 // MechJeb's autostaging keeps going while there's no thrust, all the way down to
                 // stage 0 unless told otherwise: it would ignite (and release) the satellites.
                 int limit = SatelliteStageLimit(vessel, order);
@@ -647,6 +660,18 @@ namespace RelayOrbiter.Plugin
             }
             GUI.enabled = wasEnabled;
             GUILayout.Label("MechJeb flies the ascent and stages; watch it like any MechJeb launch.");
+        }
+
+        // KSP's own Δv for the stages from `lowest` up: the first to fire at sea level, the
+        // others in vacuum. NaN until KSP has computed it.
+        private static double CarrierAscentDeltaV(Vessel vessel, int lowest)
+        {
+            var dv = vessel.VesselDeltaV;
+            if (dv == null || !dv.IsReady || dv.OperatingStageInfo == null) return double.NaN;
+            var stages = dv.OperatingStageInfo.Where(st => st.stage >= lowest).ToList();
+            if (stages.Count == 0) return double.NaN;
+            int first = stages.Max(st => st.stage);
+            return stages.Sum(st => st.stage == first ? st.deltaVatASL : st.deltaVinVac);
         }
 
         // One above the highest stage holding a satellite's part or separator.
@@ -692,20 +717,41 @@ namespace RelayOrbiter.Plugin
         private AscentStager _stager = new AscentStager();
         private readonly HashSet<uint> _launchProtected = new HashSet<uint>();
         private bool _stagingStopped;
+        private int? _awaitingStage;        // staged, not yet showing as fired
+        private double _stagedAt;
+        private const double StageConfirmTimeout = 3.0;  // s for a staging to show
 
         private void StageAscent(Vessel vessel)
         {
             double now = Time.time;
+            // Never stage again before the last staging shows: staging blind fired the stage
+            // after the one checked.
+            if (_awaitingStage.HasValue)
+            {
+                if (vessel.currentStage <= _awaitingStage.Value) _awaitingStage = null;
+                else if (now - _stagedAt < StageConfirmTimeout) return;
+                else
+                {
+                    if (!_stagingStopped)
+                        Debug.Log($"[RelayOrbiter] Ascent: stage {_awaitingStage} never showed as fired: " +
+                                  "not staging any more.");
+                    _stagingStopped = true;
+                    return;
+                }
+            }
+            if (_stagingStopped) return;
             var (thrust, _) = VesselParts.ActiveEngines(vessel);
             if (!_stager.ShouldStage(now, thrust, vessel.ctrlState.mainThrottle)) return;
-            int next = StageManager.CurrentStage - 1;
-            var parts = vessel.parts.Where(p => p.inverseStage == next).Select(p => p.flightID);
-            var decision = StagingGuard.Decide(next, parts, _launchProtected, _stager.StagedSinceThrust);
+            var (next, parts, released) = VesselParts.NextStage(vessel);
+            var decision = StagingGuard.Decide(next, parts, _launchProtected, _stager.StagedSinceThrust, released);
             if (decision == StagingDecision.Stage)
             {
                 StageManager.ActivateNextStage();
                 _stager.Staged(now);
-                Debug.Log($"[RelayOrbiter] Ascent: no thrust, staged stage {next}.");
+                _awaitingStage = next;
+                _stagedAt = now;
+                Debug.Log($"[RelayOrbiter] Ascent: no thrust, staged stage {next}" +
+                          (released.Count > 0 ? $" (drops {released.Count} part(s))." : "."));
                 return;
             }
             _stager.Staged(now, fired: false);
@@ -713,7 +759,7 @@ namespace RelayOrbiter.Plugin
             _stagingStopped = true;
             Debug.Log($"[RelayOrbiter] Ascent: no thrust, but not staging stage {next}: " + decision switch
             {
-                StagingDecision.WouldReleaseSatellite => "it holds a satellite. The carrier is out of fuel: check its stages.",
+                StagingDecision.WouldReleaseSatellite => "it holds or drops a satellite. The carrier is out of fuel: check its stages.",
                 StagingDecision.NothingLeft           => "no stage left.",
                 _                                     => $"already staged {StagingGuard.MaxStagesPerBurn} times without thrust.",
             });
