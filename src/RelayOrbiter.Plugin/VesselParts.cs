@@ -177,6 +177,45 @@ namespace RelayOrbiter.Plugin
             r.resourceName != "ElectricCharge" && r.info.resourceTransferMode != ResourceTransferMode.NONE;
 
         // Thrust (kN, vacuum) and thrust-weighted Isp (s) of the vessel's running engines.
+        // Hold the engines of these parts (the satellites still on board): shut down and
+        // disabled, so they stay off even when the stage holding them fires (MechJeb's
+        // autostaging, a stray press of the space bar). free: give them back. Returns
+        // how many engines changed.
+        public static int HoldEngines(Vessel vessel, IEnumerable<uint> partIds, bool hold)
+        {
+            var ids = new HashSet<uint>(partIds);
+            int n = 0;
+            foreach (var e in vessel.FindPartModulesImplementing<ModuleEngines>())
+            {
+                if (!ids.Contains(e.part.flightID)) continue;
+                if (hold)
+                {
+                    if (e.EngineIgnited) e.Shutdown();
+                    if (!e.isEnabled) continue;
+                    e.isEnabled = false;
+                    e.enabled = false;
+                }
+                else
+                {
+                    if (e.isEnabled) continue;
+                    e.isEnabled = true;
+                    e.enabled = true;
+                }
+                n++;
+            }
+            return n;
+        }
+
+        // Held engines that got lit anyway: shut them down again. Returns how many.
+        public static int ShutHeldEngines(Vessel vessel, IEnumerable<uint> partIds)
+        {
+            var ids = new HashSet<uint>(partIds);
+            int n = 0;
+            foreach (var e in vessel.FindPartModulesImplementing<ModuleEngines>())
+                if (ids.Contains(e.part.flightID) && !e.isEnabled && e.EngineIgnited) { e.Shutdown(); n++; }
+            return n;
+        }
+
         public static (double thrust, double isp) ActiveEngines(Vessel vessel)
         {
             double f = 0.0, flow = 0.0;
