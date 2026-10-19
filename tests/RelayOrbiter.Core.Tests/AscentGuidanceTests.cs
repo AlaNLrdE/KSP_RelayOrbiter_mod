@@ -17,12 +17,12 @@ public class AscentGuidanceTests
     [Fact]
     public void PitchesOverWithAltitude()
     {
-        double end = AscentGuidance.TurnEndAltitude(100_000, 70_000);
+        double start = AscentGuidance.TurnStartAltitude(70_000), end = AscentGuidance.TurnEndAltitude(100_000, 70_000);
         Precision.Close(59_500, end, "turn end");
-        Assert.Equal(90.0, AscentGuidance.PitchDeg(500, end));
-        double p10 = AscentGuidance.PitchDeg(10_000, end), p30 = AscentGuidance.PitchDeg(30_000, end);
+        Assert.Equal(90.0, AscentGuidance.PitchDeg(500, start, end));
+        double p10 = AscentGuidance.PitchDeg(10_000, start, end), p30 = AscentGuidance.PitchDeg(30_000, start, end);
         Assert.True(p10 < 90 && p30 < p10 && p30 > 0);
-        Assert.Equal(0.0, AscentGuidance.PitchDeg(65_000, end));
+        Assert.Equal(0.0, AscentGuidance.PitchDeg(65_000, start, end));
     }
 
     [Fact]
@@ -89,8 +89,83 @@ public class AscentGuidanceTests
     [Fact]
     public void AngleOfAttackIsTightWhileTheAirPushes()
     {
-        Assert.Equal(AscentGuidance.MaxAoADeg, AscentGuidance.AllowedAoADeg(20.0));
-        Assert.Equal(180.0, AscentGuidance.AllowedAoADeg(0.2));
+        Assert.Equal(AscentGuidance.MaxAoADeg, AscentGuidance.AllowedAoADeg(10.0));
+        Assert.Equal(180.0, AscentGuidance.AllowedAoADeg(0.0));
+    }
+
+    [Fact]
+    public void AngleOfAttackShrinksAsTheDynamicPressureGrows()
+    {
+        // q × α held: the Duna launch's 43 kPa allows ~1.4°, not 5°.
+        Precision.Close(60.0 / 43.0, AscentGuidance.AllowedAoADeg(43.0), "43 kPa");
+        Precision.Close(2.0, AscentGuidance.AllowedAoADeg(30.0), "30 kPa");
+        Assert.Equal(AscentGuidance.MinAoADeg, AscentGuidance.AllowedAoADeg(200.0));
+        // The Kerbin launches that flew fine (2° at 27 kPa) stay within it.
+        Assert.True(AscentGuidance.AllowedAoADeg(27.0) >= 2.0);
+    }
+
+    [Fact]
+    public void TheCommandTurnsSlowlyInThickAir()
+    {
+        // The Duna launch's nose swung at 7.7°/s: the command now turns at most 2°/s there.
+        Assert.Equal(AscentGuidance.MaxSlewInAirDegPerS, AscentGuidance.MaxSlewDegPerS(43.0));
+        Assert.True(AscentGuidance.MaxSlewDegPerS(0.5) > AscentGuidance.MaxSlewInAirDegPerS);
+        Assert.Equal(AscentGuidance.MaxSlewFreeDegPerS, AscentGuidance.MaxSlewDegPerS(0.0));
+        Assert.Equal(AscentGuidance.MaxSlewFreeDegPerS, AscentGuidance.MaxSlewDegPerS(0.01));
+    }
+
+    [Fact]
+    public void TheDunaLaunchsTumbleIsDetectedEarlier()
+    {
+        // 21:45:49.9: 20° at 43 kPa. With ~1.4° allowed the abort threshold is ~16.4°.
+        Assert.True(AscentGuidance.IsDeparting(20.0, 43.0));
+        Assert.False(AscentGuidance.IsDeparting(0.7, 36.0));
+    }
+
+    [Fact]
+    public void AngleOfAttackLimitFadesOutWithTheAir()
+    {
+        // No jump from 5° to free (the old 1 kPa switch): it widens as q drops.
+        Assert.Equal(AscentGuidance.MaxAoADeg, AscentGuidance.AllowedAoADeg(AscentGuidance.AoAFadeoutPressure));
+        Precision.Close(12.5, AscentGuidance.AllowedAoADeg(1.0), "1 kPa");
+        Precision.Close(25.0, AscentGuidance.AllowedAoADeg(0.5), "0.5 kPa");
+        Assert.Equal(180.0, AscentGuidance.AllowedAoADeg(0.01));
+        double previous = AscentGuidance.MaxAoADeg;
+        for (double q = 2.4; q > 0.05; q -= 0.1)
+        {
+            double allowed = AscentGuidance.AllowedAoADeg(q);
+            Assert.True(allowed >= previous, $"q {q:F1}");
+            previous = allowed;
+        }
+    }
+
+    [Fact]
+    public void TheTurnStartsAboveTheThickAir()
+    {
+        Assert.Equal(3_500.0, AscentGuidance.TurnStartAltitude(70_000));   // Kerbin
+        Assert.Equal(2_500.0, AscentGuidance.TurnStartAltitude(50_000));   // Duna
+        Assert.Equal(AscentGuidance.MinTurnStartAltitude, AscentGuidance.TurnStartAltitude(0.0));
+    }
+
+    [Fact]
+    public void TheMunLaunchHeldVerticalThroughItsMaxQ()
+    {
+        // Sat array Super (SRBs, 17 MN) was at 2.2 km, 77° and at the 5° limit at q 23 kPa:
+        // the program now still asks for vertical there.
+        var c = new AscentGuidance(250_000, 70_000).Update(2_200, 220, 5_000, 30);
+        Assert.Equal(90.0, c.PitchDeg);
+    }
+
+    [Fact]
+    public void TheMunLaunchsTumbleIsDetected()
+    {
+        // Logged at 20:40:52 (38.5° at 3.3 kPa) and 20:41:12 (50.9° at 19.5 kPa).
+        Assert.True(AscentGuidance.IsDeparting(38.5, 3.3));
+        Assert.True(AscentGuidance.IsDeparting(50.9, 19.5));
+        // ...but not its controlled climb (7° at 23.3 kPa), nor a free nose in thin air.
+        Assert.False(AscentGuidance.IsDeparting(7.0, 23.3));
+        Assert.False(AscentGuidance.IsDeparting(21.5, 0.5));
+        Assert.False(AscentGuidance.IsDeparting(98.0, 0.0));  // on the pad
     }
 
     [Fact]
