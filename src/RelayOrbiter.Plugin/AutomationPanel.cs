@@ -601,11 +601,32 @@ namespace RelayOrbiter.Plugin
             DrawCoverage(vessel, body, body.Radius + target.Value, order, n);
             _continueAfterLaunch = GUILayout.Toggle(_continueAfterLaunch, " Continue with the deployment once in orbit");
 
+            // MechJeb stops autostaging above the satellites' stages: the carrier's own engines
+            // must all fire before that.
+            int stageLimit = SatelliteStageLimit(vessel, order);
+            var satIds = new HashSet<uint>(order.SelectMany(c => c.PartIds).Concat(order.Select(c => c.SeparatorId)));
+            int carrierLast = vessel.FindPartModulesImplementing<ModuleEngines>()
+                .Where(e => !satIds.Contains(e.part.flightID)).Select(e => e.part.inverseStage)
+                .DefaultIfEmpty(int.MaxValue).Min();
+            bool stagingOk = carrierLast >= stageLimit;
+            if (!stagingOk)
+                Warn($"The carrier has an engine in stage {carrierLast}, after a satellite's stage: MechJeb stops " +
+                     $"autostaging at stage {stageLimit} so it never fires the satellites, and would never light that " +
+                     "engine. Move the satellites' separators and engines to the last stages.");
+            else
+                Row("MechJeb autostaging", $"stops at stage {stageLimit} (satellites below)");
+
             bool wasEnabled = GUI.enabled;
-            GUI.enabled = wasEnabled && (!_settings.ChangeInclination || _inclinationValid);
+            GUI.enabled = wasEnabled && stagingOk && (!_settings.ChangeInclination || _inclinationValid);
             if (GUILayout.Button("Launch with MechJeb"))
             {
                 mechJeb.Configure(launchAlt, inclination);
+                // MechJeb's autostaging keeps going while there's no thrust, all the way down to
+                // stage 0 unless told otherwise: it would ignite (and release) the satellites.
+                int limit = SatelliteStageLimit(vessel, order);
+                bool limited = mechJeb.LimitStaging(limit, this);
+                Debug.Log($"[RelayOrbiter] MechJeb autostaging stops at stage {limit} (the satellites' stages are " +
+                          $"below it){(limited ? "" : ": this MechJeb has no staging limit, watch the staging")}.");
                 mechJeb.Engage(this);
                 _launch = mechJeb;
                 Debug.Log($"[RelayOrbiter] Launching with MechJeb to {launchAlt / 1000.0:F1} km, " +
@@ -613,6 +634,15 @@ namespace RelayOrbiter.Plugin
             }
             GUI.enabled = wasEnabled;
             GUILayout.Label("MechJeb flies the ascent and stages; watch it like any MechJeb launch.");
+        }
+
+        // One above the highest stage holding a satellite's part or separator.
+        private static int SatelliteStageLimit(Vessel vessel, List<SatelliteCandidate> order)
+        {
+            var ids = new HashSet<uint>(order.SelectMany(c => c.PartIds).Concat(order.Select(c => c.SeparatorId)));
+            int highest = vessel.parts.Where(p => ids.Contains(p.flightID)).Select(p => p.inverseStage)
+                                .DefaultIfEmpty(-1).Max();
+            return highest + 1;
         }
 
         private void DrawLaunching()
@@ -631,6 +661,7 @@ namespace RelayOrbiter.Plugin
             // MechJeb disengages itself once the orbit is circularized.
             if (vessel.situation == Vessel.Situations.ORBITING && !_launch.Enabled)
             {
+                _launch.Disengage(this);  // also lifts the staging limit
                 _launch = null;
                 _autoStart = _continueAfterLaunch;
                 Debug.Log($"[RelayOrbiter] In orbit after the launch: {vessel.orbit.ApA / 1000.0:F1} x " +
