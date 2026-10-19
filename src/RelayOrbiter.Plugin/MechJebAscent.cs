@@ -53,13 +53,20 @@ namespace RelayOrbiter.Plugin
             }
         }
 
-        // Circular orbit at altitude (m) and inclination (degrees), staging automatically.
-        public void Configure(double altitude, double inclinationDeg)
+        // Circular orbit at altitude (m) and inclination (degrees). autostage: MechJeb stages
+        // by itself; off, someone else must (its own limits don't hold its ascent back from
+        // the satellites' stages). The player's setting comes back on disengage.
+        public void Configure(double altitude, double inclinationDeg, bool autostage)
         {
             SetEditable("DesiredOrbitAltitude", altitude);
             SetEditable("DesiredInclination", inclinationDeg);
-            _settings.GetType().GetProperty("Autostage", Instance)?.SetValue(_settings, true, null);
+            var prop = _settings.GetType().GetProperty("Autostage", Instance);
+            if (prop == null) return;
+            if (_savedAutostage == null) _savedAutostage = prop.GetValue(_settings, null) as bool?;
+            prop.SetValue(_settings, autostage, null);
         }
+
+        private bool? _savedAutostage;
 
         public void Engage(object user)    => CallUsers("Add", user);
 
@@ -67,6 +74,9 @@ namespace RelayOrbiter.Plugin
         {
             CallUsers("Remove", user);
             ReleaseStageLimit();
+            if (_savedAutostage.HasValue)
+                _settings.GetType().GetProperty("Autostage", Instance)?.SetValue(_settings, _savedAutostage.Value, null);
+            _savedAutostage = null;
         }
 
         // Never autostage down to `stage` or below: the satellites' stages (their engines
