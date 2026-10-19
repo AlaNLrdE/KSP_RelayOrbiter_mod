@@ -128,18 +128,36 @@ On the ground (pad, landed or splashed down) the Automation tab shows **Launch t
 - **Continue with the deployment once in orbit:** when MechJeb has circularized,
   the deployment starts on its own, exactly as if you pressed Start.
 
-**Launch with MechJeb** configures MechJeb's ascent (altitude and inclination) and
-engages it. **Abort launch** disengages it. Watch the ascent as any MechJeb launch.
+**Ascent autopilot** picks who flies the ascent. *Relay Orbiter* is the default;
+*MechJeb 2* is offered when it is installed and the vessel has a MechJeb core. MechJeb
+is no longer needed to launch.
 
-MechJeb flies, but **Relay Orbiter stages**:
+- **Relay Orbiter's ascent:**
 
-- MechJeb's autostaging goes through every stage, the satellites' included, even with a
-  staging limit set. It is switched off for the launch and your setting comes back
-  afterwards.
-- Relay Orbiter fires the next stage when the throttle is up and no engine gives thrust,
-  but never a stage holding a satellite's part or separator.
+  - It climbs straight up, then turns gradually (horizontal by 85 % of the atmosphere's
+    height, or early on an airless body), on the heading that gives the inclination,
+    corrected for the planet's rotation.
+  - It burns until the apoapsis reaches the launch altitude, topping it up when drag
+    lowers it, and coasts out of the atmosphere.
+  - It then circularizes with the same node executor as every other burn.
+  - It steers with the vessel's SAS, so it needs a probe core or pilot with SAS.
+
+- **Launch to:** *Auto* is a low orbit (30 km above the atmosphere, or the target when
+  that's lower). *Custom* takes any altitude above the atmosphere. The choice is saved.
+
+Either way, **Relay Orbiter stages**:
+
+- It fires the next stage when thrust is wanted and no engine gives any, but never a
+  stage holding a satellite's part or separator, or one whose decoupler would drop
+  them.
+- It never stages twice before the last staging shows.
 - The satellites' engines are held off from the launch until each satellite is released.
 - Each stage must burn out completely before the next one fires. Boosters that run dry
   while the core still burns are not dropped, so design the launcher with plain stages.
-- The carrier's own engines must all fire before the satellites' stages. If one doesn't,
-  the launch section says so and **Launch with MechJeb** stays disabled.
+- With MechJeb, its own autostaging is switched off for the launch (it goes through the
+  satellites' stages even with a limit set) and your setting comes back afterwards.
+
+Before launching, the section checks the stages: every carrier engine must fire before
+the satellites' stages. It also compares the carrier's own Δv (its stages above the
+satellites') with a rough estimate of the ascent, which counts the planet's rotation: a
+retrograde orbit costs most. The satellites' fuel can't be used for the ascent.
