@@ -161,6 +161,7 @@ namespace RelayOrbiter.Plugin
             _matchPlanes = GUILayout.Toggle(_matchPlanes, "Match the orbital planes too (plane change first)");
             NodeExecutor.AutoActivateEngines = GUILayout.Toggle(NodeExecutor.AutoActivateEngines,
                 "Activate the satellites' engines when none is running before a burn");
+            Warp.Enabled = GUILayout.Toggle(Warp.Enabled, "Use time warp (off: you warp, burns still start on time)");
             if (_matchPlanes)
             {
                 var plane = CommonPlane(members, reference, null);

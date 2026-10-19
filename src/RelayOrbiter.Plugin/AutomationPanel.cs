@@ -274,6 +274,7 @@ namespace RelayOrbiter.Plugin
             _extendPanels = GUILayout.Toggle(_extendPanels, " Extend the satellites' solar panels before release");
             NodeExecutor.AutoActivateEngines = GUILayout.Toggle(NodeExecutor.AutoActivateEngines,
                 " Activate the current stage's engines when none is running before a burn");
+            Warp.Enabled = GUILayout.Toggle(Warp.Enabled, " Use time warp (off: you warp, burns still start on time)");
 
             // Names: callsign unique around this body, orbit tag, inclination.
             string callsign = walker?.Callsign ??
@@ -606,6 +607,7 @@ namespace RelayOrbiter.Plugin
                         $"deploy {n} satellites, {Resonance.SpacingDeg(n):F0}° apart");
             DrawCoverage(vessel, body, body.Radius + target.Value, order, n);
             _continueAfterLaunch = GUILayout.Toggle(_continueAfterLaunch, " Continue with the deployment once in orbit");
+            Warp.Enabled = GUILayout.Toggle(Warp.Enabled, " Use time warp (to the circularization, and later waits)");
 
             // MechJeb stops autostaging above the satellites' stages: the carrier's own engines
             // must all fire before that.
