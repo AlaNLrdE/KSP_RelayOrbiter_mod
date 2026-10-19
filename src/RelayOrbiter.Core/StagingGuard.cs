@@ -7,13 +7,16 @@ namespace RelayOrbiter.Core
         Stage,                  // safe: activate the next stage
         NothingLeft,            // no stage left to activate
         WouldReleaseSatellite,  // the next stage holds a satellite (or its separator)
-        TooManyStages,          // already staged MaxStagesPerBurn times in this burn
+        TooManyStages,          // already lit MaxStagesPerBurn stages of engines without thrust
     }
 
     // Whether the carrier may stage during one of its burns (a spent stage), without
     // ever releasing a satellite that is still on board.
     public static class StagingGuard
     {
+        // Stages that light engines yet give no thrust: something is wrong past this.
+        // Stages without engines (fairings, decouplers) don't count: a carrier may have
+        // several between a spent stage and its next engine.
         public const int MaxStagesPerBurn = 4;
 
         // nextStage: the stage number that would activate; nextStageParts: its parts;

@@ -13,7 +13,8 @@ namespace RelayOrbiter.Core
 
         private double _noThrustSince = double.NaN;
 
-        // Stages fired since the last time an engine gave thrust (StagingGuard's limit).
+        // Stages lighting engines fired since the last time an engine gave thrust
+        // (StagingGuard's limit). Stages without engines (fairings, decouplers) are free.
         public int StagedSinceThrust { get; private set; }
 
         public bool ShouldStage(double now, double thrust, double throttle)
@@ -30,10 +31,10 @@ namespace RelayOrbiter.Core
         }
 
         // A stage fired (or staging was refused): wait again before the next one.
-        public void Staged(double now, bool fired = true)
+        public void Staged(double now, bool fired = true, bool lightsEngines = true)
         {
             _noThrustSince = now;
-            if (fired) StagedSinceThrust++;
+            if (fired && lightsEngines) StagedSinceThrust++;
         }
     }
 }

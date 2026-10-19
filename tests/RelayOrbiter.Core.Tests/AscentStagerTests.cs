@@ -54,6 +54,18 @@ public class AscentStagerTests
     }
 
     [Fact]
+    public void StagesWithoutEnginesAreFree()
+    {
+        // Sat array Super at Duna: stages 5 (fairing), 4 (decoupler), 3 and 2 (fairings),
+        // then the J-2X in stage 1. Counting them all stopped one stage short of it.
+        var s = new AscentStager();
+        foreach (var t in new[] { 0.0, 2.0, 4.0, 6.0 }) s.Staged(t, lightsEngines: false);
+        Assert.Equal(0, s.StagedSinceThrust);
+        var satellites = new HashSet<uint> { 101 };
+        Assert.Equal(StagingDecision.Stage, StagingGuard.Decide(1, new uint[] { 60, 61 }, satellites, s.StagedSinceThrust));
+    }
+
+    [Fact]
     public void TheUsersCraftStopsAboveTheSatellites()
     {
         // Sat array extra++: carrier engine in stage 2, satellites' engines in 1 and 0.
