@@ -177,12 +177,16 @@ namespace RelayOrbiter.Plugin
             r.resourceName != "ElectricCharge" && r.info.resourceTransferMode != ResourceTransferMode.NONE;
 
         // Thrust (kN, vacuum) and thrust-weighted Isp (s) of the vessel's running engines.
+        // The current stage: the furthest along of KSP's two counters (each can lag behind
+        // right after staging; reading a stale one would check the wrong stage).
+        public static int CurrentStage(Vessel vessel) =>
+            System.Math.Min(vessel.currentStage, KSP.UI.Screens.StageManager.CurrentStage);
+
         // The stage that fires next and every part it would cut loose (its decouplers'
-        // far sides). vessel.currentStage, not StageManager.CurrentStage: that one can lag
-        // a frame behind right after staging.
+        // far sides).
         public static (int stage, List<uint> parts, IReadOnlyCollection<uint> released) NextStage(Vessel vessel)
         {
-            int next = vessel.currentStage - 1;
+            int next = CurrentStage(vessel) - 1;
             var parts = vessel.parts.Where(p => p.inverseStage == next).Select(p => p.flightID).ToList();
             var released = new PartTree(From(vessel)).ReleasedBy(parts);
             return (next, parts, released);

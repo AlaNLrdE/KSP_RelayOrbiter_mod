@@ -33,6 +33,19 @@ namespace RelayOrbiter.Core
         public const double TurnStartSpeed    = 60.0;     // ...or this fast (m/s)
         public const double TurnShape         = 0.5;      // pitch = 90°·(1 − x^shape)
         public const double TopUpMargin       = 1_000.0;  // m: apoapsis this far below: burn again
+        public const double MaxAoADeg         = 5.0;      // nose this close to the airflow while the air pushes
+        public const double AoAFreePressure   = 1.0;      // kPa: below this the angle of attack is free
+        public const double MaxPressure       = 30.0;     // kPa: throttle down above this
+
+        // Largest angle allowed between the nose and the surface velocity: tight while the
+        // air pushes (a big angle of attack tears weak joints off), free in near-vacuum.
+        public static double AllowedAoADeg(double dynamicPressureKPa) =>
+            dynamicPressureKPa < AoAFreePressure ? 180.0 : MaxAoADeg;
+
+        // Throttle limited so the dynamic pressure stays under MaxPressure.
+        public static double LimitThrottle(double throttle, double dynamicPressureKPa) =>
+            dynamicPressureKPa <= MaxPressure ? throttle
+            : Math.Max(0.1, throttle * MaxPressure / dynamicPressureKPa);
 
         private readonly double _target, _atmosphere, _turnEnd;
 

@@ -7,8 +7,8 @@ public class AscentStagerTests
     {
         var s = new AscentStager();
         Assert.False(s.ShouldStage(0.0, 0.0, 1.0));
-        Assert.False(s.ShouldStage(0.3, 0.0, 1.0));
-        Assert.True(s.ShouldStage(0.6, 0.0, 1.0));
+        Assert.False(s.ShouldStage(0.6, 0.0, 1.0));
+        Assert.True(s.ShouldStage(1.1, 0.0, 1.0));
     }
 
     [Fact]
@@ -30,8 +30,8 @@ public class AscentStagerTests
         s.ShouldStage(0.0, 0.0, 1.0);
         Assert.True(s.ShouldStage(1.0, 0.0, 1.0));
         s.Staged(1.0);
-        Assert.False(s.ShouldStage(1.2, 0.0, 1.0));  // the new stage may still be igniting
-        Assert.True(s.ShouldStage(1.6, 0.0, 1.0));   // a stage without engines (fairings): the next one
+        Assert.False(s.ShouldStage(1.6, 0.0, 1.0));  // the new stage may still be igniting
+        Assert.True(s.ShouldStage(2.1, 0.0, 1.0));   // a stage without engines (fairings): the next one
         Assert.Equal(1, s.StagedSinceThrust);
     }
 

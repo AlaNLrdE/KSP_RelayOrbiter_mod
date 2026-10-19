@@ -29,12 +29,15 @@ namespace RelayOrbiter.Plugin
             double now = Time.time;
             if (_awaiting.HasValue)
             {
-                if (vessel.currentStage <= _awaiting.Value) _awaiting = null;
+                if (VesselParts.CurrentStage(vessel) <= _awaiting.Value) _awaiting = null;
                 else if (now - _stagedAt < StageConfirmTimeout) return;
                 else
                 {
-                    Stop($"stage {_awaiting} never showed as fired: not staging any more.");
-                    return;
+                    // Not confirmed: carry on from what KSP says now (the guard checks the
+                    // stage that really comes next).
+                    Debug.Log($"[RelayOrbiter] Ascent: stage {_awaiting} not confirmed (stage counters " +
+                              $"{vessel.currentStage} / {StageManager.CurrentStage}); carrying on.");
+                    _awaiting = null;
                 }
             }
             if (_stopped) return;

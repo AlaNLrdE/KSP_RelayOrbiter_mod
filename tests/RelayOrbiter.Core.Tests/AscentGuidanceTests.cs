@@ -85,4 +85,19 @@ public class AscentGuidanceTests
     [Fact]
     public void UnreachableInclinationGoesDueEast() =>
         Assert.InRange(AscentGuidance.LaunchHeadingDeg(0.0, 28.0, OrbitalSpeed, SurfaceSpeed), 89.0, 91.0);
+
+    [Fact]
+    public void AngleOfAttackIsTightWhileTheAirPushes()
+    {
+        Assert.Equal(AscentGuidance.MaxAoADeg, AscentGuidance.AllowedAoADeg(20.0));
+        Assert.Equal(180.0, AscentGuidance.AllowedAoADeg(0.2));
+    }
+
+    [Fact]
+    public void ThrottlesDownAboveMaxPressure()
+    {
+        Assert.Equal(1.0, AscentGuidance.LimitThrottle(1.0, 25.0));
+        Precision.Close(0.5, AscentGuidance.LimitThrottle(1.0, 60.0), "half");
+        Assert.Equal(0.1, AscentGuidance.LimitThrottle(1.0, 1000.0));
+    }
 }
