@@ -143,6 +143,8 @@ namespace RelayOrbiter.Plugin
             _settings.InclinationDeg = _config.GetValue("inclination", 0.0);
             _settings.NameSatellites = _config.GetValue("nameSatellites", true);
             NodeExecutor.AutoActivateEngines = _config.GetValue("activateEngines", true);
+            _settings.LaunchAltitudeKm = _config.GetValue("launchAltitudeKm", double.NaN);
+            _settings.MechJebAscent = _config.GetValue("mechJebAscent", false);
         }
 
         private void SaveSettings()
@@ -156,6 +158,8 @@ namespace RelayOrbiter.Plugin
             _config.SetValue("inclination", _settings.InclinationDeg);
             _config.SetValue("nameSatellites", _settings.NameSatellites);
             _config.SetValue("activateEngines", NodeExecutor.AutoActivateEngines);
+            _config.SetValue("launchAltitudeKm", _settings.LaunchAltitudeKm);
+            _config.SetValue("mechJebAscent", _settings.MechJebAscent);
             _config.save();
         }
 
