@@ -276,7 +276,11 @@ namespace RelayOrbiter.Plugin
                 }
             }
 
-            var engine = p.FindModulesImplementing<ModuleEngines>().FirstOrDefault(e => e.isEnabled);
+            // An enabled engine module first (multi-mode engines disable the other mode);
+            // otherwise a disabled one: a satellite's engine held off by HoldEngines is still
+            // its engine.
+            var engines = p.FindModulesImplementing<ModuleEngines>();
+            var engine = engines.FirstOrDefault(e => e.isEnabled) ?? engines.FirstOrDefault();
             double thrust = engine != null ? engine.maxThrust * engine.thrustPercentage / 100.0 : 0.0;
             double isp    = engine != null ? engine.atmosphereCurve.Evaluate(0f) : 0.0;
 
