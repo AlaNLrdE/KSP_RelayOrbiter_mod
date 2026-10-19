@@ -250,7 +250,7 @@ namespace RelayOrbiter.Plugin
 
             string childWord = body.Parent == null ? "planet" : "moon";
             var labels = sources.Select(s => SourceLabel(s, childWord)).ToArray();
-            _source = sources[GUILayout.Toolbar(sources.IndexOf(_source), labels)];
+            _source = sources[Choice.Draw(null, sources.IndexOf(_source), labels, 0f, Width - WindowPadding)];
 
             switch (_source)
             {
@@ -263,7 +263,7 @@ namespace RelayOrbiter.Plugin
                 {
                     var options = _planner.Children(body);
                     _child = Mathf.Clamp(_child, 0, options.Count - 1);
-                    _child = GUILayout.SelectionGrid(_child, options.Select(o => o.Name).ToArray(), 3);
+                    _child = Choice.Draw(null, _child, options.Select(o => o.Name).ToArray(), 0f, Width - WindowPadding);
                     Row($"{options[_child].Name}'s orbital altitude", Km(options[_child].Altitude));
                     return options[_child];
                 }
@@ -274,9 +274,9 @@ namespace RelayOrbiter.Plugin
                     _midA = Mathf.Clamp(_midA, 0, kids.Count - 1);
                     _midB = Mathf.Clamp(_midB, 0, kids.Count - 1);
                     GUILayout.Label($"First {childWord}");
-                    _midA = GUILayout.SelectionGrid(_midA, names, 3);
+                    _midA = Choice.Draw(null, _midA, names, 0f, Width - WindowPadding);
                     GUILayout.Label($"Second {childWord}");
-                    _midB = GUILayout.SelectionGrid(_midB, names, 3);
+                    _midB = Choice.Draw(null, _midB, names, 0f, Width - WindowPadding);
                     if (_midA == _midB)
                     {
                         GUILayout.Label($"Choose two different {childWord}s.", _warn);
