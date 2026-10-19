@@ -5,7 +5,7 @@ namespace RelayOrbiter.Plugin
 {
     // MechJeb 2's ascent autopilot, reached by reflection so MechJeb stays optional.
     // Uses MuMech.VesselExtensions.GetMasterMechJeb(vessel), core.AscentSettings
-    // (DesiredOrbitAltitude, DesiredInclination, Autostage, LastStage), core.Ascent
+    // (DesiredOrbitAltitude, DesiredInclination, Autostage), core.Ascent
     // (Users, Enabled, Status) and core.Staging (AutoStageLimitRequest/Remove), as in
     // MechJeb 2.15.
     internal sealed class MechJebAscent
@@ -80,8 +80,9 @@ namespace RelayOrbiter.Plugin
         }
 
         // Never autostage down to `stage` or below: the satellites' stages (their engines
-        // and separators) stay for the deployment. Also the last stage MechJeb's guidance
-        // plans with. False when this MechJeb has no staging limit to set.
+        // and separators) stay for the deployment. (MechJeb's ascent doesn't always honour
+        // it: Relay Orbiter stages itself during its launches.) False when this MechJeb has
+        // no staging limit to set.
         public bool LimitStaging(int stage, object user)
         {
             bool set = false;
@@ -95,8 +96,6 @@ namespace RelayOrbiter.Plugin
                     set = true;
                 }
             }
-            var last = _settings.GetType().GetField("LastStage", Instance)?.GetValue(_settings);
-            last?.GetType().GetProperty("Val", Instance)?.SetValue(last, stage, null);
             return set;
         }
 
