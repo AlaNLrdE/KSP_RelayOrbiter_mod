@@ -246,6 +246,46 @@ namespace RelayOrbiter.Plugin
             return (f, flow > 0.0 ? f / flow : 0.0);
         }
 
+        // "3 part(s): Title ×2 [engine], Title" — what a stage holds, for the log.
+        public static string DescribeParts(Vessel vessel, IEnumerable<uint> partIds)
+        {
+            var ids = new HashSet<uint>(partIds);
+            var parts = vessel.parts.Where(p => ids.Contains(p.flightID)).ToList();
+            if (parts.Count == 0) return "no parts";
+            var groups = parts.GroupBy(p => p.partInfo.title + (p.FindModuleImplementing<ModuleEngines>() != null ? " [engine]" : ""))
+                              .Select(g => g.Count() > 1 ? $"{g.Key} ×{g.Count()}" : g.Key);
+            return $"{parts.Count} part(s): {string.Join(", ", groups)}";
+        }
+
+        public static bool HasEngines(Vessel vessel, IEnumerable<uint> partIds)
+        {
+            var ids = new HashSet<uint>(partIds);
+            return vessel.parts.Any(p => ids.Contains(p.flightID) && p.FindModuleImplementing<ModuleEngines>() != null);
+        }
+
+        // Every engine part's state; a part with several engine modules (multi-mode) is
+        // running if any of them burns, else spent if any flamed out.
+        public static Dictionary<uint, EngineState> EngineStates(Vessel vessel)
+        {
+            var states = new Dictionary<uint, EngineState>();
+            foreach (var e in vessel.FindPartModulesImplementing<ModuleEngines>())
+            {
+                var state = !e.EngineIgnited ? EngineState.Unlit
+                          : e.flameout       ? EngineState.Spent
+                                             : EngineState.Running;
+                uint id = e.part.flightID;
+                if (!states.TryGetValue(id, out var known) || Rank(state) > Rank(known)) states[id] = state;
+            }
+            return states;
+        }
+
+        private static int Rank(EngineState s) => s switch
+        {
+            EngineState.Running => 2,
+            EngineState.Spent   => 1,
+            _                   => 0,
+        };
+
         private static CorePart ToInfo(Part p)
         {
             var kind = SeparatorKind.None;

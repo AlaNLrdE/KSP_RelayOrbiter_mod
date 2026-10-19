@@ -15,12 +15,15 @@ namespace RelayOrbiter.Plugin
         private readonly ManeuverNode _node;
         private readonly CelestialBody _moon;
         private readonly double _targetPe, _minPe, _span;
+        private readonly double? _goalInc;
 
         // span: how long after the node to look for the closest approach (about the
-        // transfer time).
+        // transfer time). goalInclination: the plan's target inclination around the
+        // destination, aimed at as well; null keeps whatever arrival plane.
         public EncounterSearch(PatchedConicSolver solver, ManeuverNode node, CelestialBody moon,
-                               double targetPeriapsis, double minPeriapsis, double span)
+                               double targetPeriapsis, double minPeriapsis, double span, double? goalInclination)
         {
+            _goalInc  = goalInclination;
             _solver   = solver;
             _node     = node;
             _moon     = moon;
@@ -48,24 +51,18 @@ namespace RelayOrbiter.Plugin
         public const double NoEncounter = 10.0;  // costs from here up: no encounter
         private const int MinPatches = 6;
 
-        // Below 1: an encounter, the periapsis error relative to the target. Then, worse
-        // and worse: an impact (2..3), a retrograde orbit (5..), no encounter (10 plus
-        // the closest approach in SOI radii).
-        public static double Cost(Orbit? patch, double targetPe, double minPe)
-        {
-            if (patch == null) return 1e6;
-            double cost = Math.Min(1.0, Math.Abs(patch.PeR - targetPe) / targetPe);
-            if (patch.PeR < minPe) cost = 2.0 + Math.Min(1.0, (minPe - patch.PeR) / minPe);
-            if (patch.inclination > 90.0) cost += 5.0;
-            return cost;
-        }
+        // EncounterCost's bands for an encounter; no encounter: 10 plus the closest
+        // approach in SOI radii.
+        public static double Cost(Orbit? patch, double targetPe, double minPe, double? goalInc) =>
+            patch == null ? 1e6 : RelayOrbiter.Core.EncounterCost.Of(patch.PeR, patch.inclination, targetPe, minPe, goalInc);
 
         // The cost of a trajectory starting at `start` (a node's next patch, or the
         // vessel's orbit).
-        public static double Cost(Orbit? start, CelestialBody moon, double targetPe, double minPe, double span)
+        public static double Cost(Orbit? start, CelestialBody moon, double targetPe, double minPe, double span,
+                                  double? goalInc)
         {
             var patch = PatchAround(start, moon);
-            if (patch != null) return Cost(patch, targetPe, minPe);
+            if (patch != null) return Cost(patch, targetPe, minPe, goalInc);
             double d = ClosestApproach(start, moon, span);
             return double.IsNaN(d) ? 1e6 : NoEncounter + d / moon.sphereOfInfluence;
         }
@@ -99,12 +96,23 @@ namespace RelayOrbiter.Plugin
             return best;
         }
 
+        private double _bestLogged = double.MaxValue;
+
         public double Evaluate(double ut, Vector3d dv)
         {
             Evaluations++;
             _node.OnGizmoUpdated(dv, ut);  // x radial, y normal, z prograde
             _solver.UpdateFlightPlan();
-            return Cost(_node.nextPatch, _moon, _targetPe, _minPe, _span);
+            double cost = Cost(_node.nextPatch, _moon, _targetPe, _minPe, _span, _goalInc);
+            // Each clear improvement (2% or more), not every evaluation (hundreds) nor every
+            // fourth-decimal gain: how the search converged.
+            if (cost < _bestLogged - Math.Max(1e-4, 0.02 * _bestLogged))
+            {
+                _bestLogged = cost;
+                RoLog.Dbg($"Encounter search #{Evaluations}: UT {ut:F0}, Δv (radial {dv.x:F2}, normal {dv.y:F2}, " +
+                          $"prograde {dv.z:F2}) → cost {cost:F4}, arrival {RoLog.Patch(Patch)}.");
+            }
+            return cost;
         }
 
         public Orbit? Patch => PatchAround(_node.nextPatch, _moon);

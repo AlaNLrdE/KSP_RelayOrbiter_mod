@@ -29,6 +29,8 @@ namespace RelayOrbiter.Plugin
         private Vector3d _direction;  // burn direction when ignition started
         private double _misalignedSince = double.NaN, _noThrustSince = double.NaN, _noSasSince = double.NaN;
         private float _throttle;
+        private double _nextReport;                  // Time.time of the next burn log line
+        private const double ReportEvery = 5.0;      // s between burn log lines
 
         // Before a burn, with no engine running: ignite the current stage's engines that
         // are off (never a satellite's still on board). A player setting, on by default.
@@ -75,6 +77,14 @@ namespace RelayOrbiter.Plugin
             double dvLeft = burnVec.magnitude;
             var (thrust, isp) = VesselParts.ActiveEngines(_vessel);
             double mass = _vessel.GetTotalMass();
+            if (_burning && Time.time >= _nextReport)
+            {
+                _nextReport = Time.time + ReportEvery;
+                RoLog.Dbg($"{_vessel.vesselName} burning: {Vector3d.Dot(burnVec, _direction):F1} m/s left along the burn " +
+                          $"({dvLeft:F1} total), throttle {_throttle:F2}, " +
+                          $"{Vector3.Angle(_vessel.ReferenceTransform.up, (Vector3)(_tail ? _direction : burnVec)):F1}° off, " +
+                          $"tail {_tail}, {RoLog.Propulsion(_vessel)}; now {RoLog.Describe(_vessel.orbit)}.");
+            }
 
             if (!_tail && !PointAt(node))
             {
@@ -137,6 +147,9 @@ namespace RelayOrbiter.Plugin
                 IsWaiting = false;
                 _burning = true;
                 _direction = burnVec.normalized;
+                RoLog.Dbg($"{_vessel.vesselName} ignition: {dvLeft:F1} m/s, about {duration:F0} s, {(node.UT - now):F0} s " +
+                          $"before the node, SAS {_mode}, {Vector3.Angle(_vessel.ReferenceTransform.up, (Vector3)burnVec):F1}° off, " +
+                          $"{RoLog.Propulsion(_vessel)}; protected parts {_protectedParts?.Count ?? 0}.");
             }
 
             // Measure what is left along the original burn direction: the sideways
@@ -149,10 +162,13 @@ namespace RelayOrbiter.Plugin
                 _tail = true;
                 if (_vessel.Autopilot.CanSetMode(VesselAutopilot.AutopilotMode.StabilityAssist))
                     _vessel.Autopilot.SetMode(VesselAutopilot.AutopilotMode.StabilityAssist);
+                RoLog.Dbg($"{_vessel.vesselName}: burn tail, attitude held ({dvLeft:F2} m/s left, {accel:F2} m/s²).");
             }
 
             if (_burn.Update(dvLeft))
             {
+                RoLog.Dbg($"{_vessel.vesselName}: burn complete, {dvLeft:F3} m/s left along the burn ({burnVec.magnitude:F3} " +
+                          $"total), staged {_staged} engine stage(s); now {RoLog.Describe(_vessel.orbit)}; {RoLog.Propulsion(_vessel)}.");
                 Finish();
                 node.RemoveSelf();
                 Status = "Burn complete.";
@@ -186,16 +202,24 @@ namespace RelayOrbiter.Plugin
         {
             if (_protectedParts == null) return Fail($"Out of thrust with {dvLeft:F1} m/s left.");
             var (next, parts, released) = VesselParts.NextStage(_vessel);
-            switch (StagingGuard.Decide(next, parts, _protectedParts, _staged, released))
+            var decision = StagingGuard.Decide(next, parts, _protectedParts, _staged, released);
+            RoLog.Dbg($"{_vessel.vesselName} out of thrust ({dvLeft:F1} m/s left): next stage {next} has " +
+                      $"{VesselParts.DescribeParts(_vessel, parts)}; releases {released.Count} part(s) " +
+                      $"({released.Count(_protectedParts.Contains)} protected); engine stages lit so far {_staged}; " +
+                      $"decision {decision}; {RoLog.Propulsion(_vessel)}.");
+            switch (decision)
             {
                 case StagingDecision.Stage:
                     _throttle = 0f;
+                    // Only a stage that lights engines counts against the limit: fairings and
+                    // decouplers between the spent stage and the next engine are free.
+                    bool lights = VesselParts.HasEngines(_vessel, parts);
                     StageManager.ActivateNextStage();
-                    _staged++;
+                    if (lights) _staged++;
                     _noThrustSince = now;  // give the new stage time to ignite
                     Status = $"Staging: stage {next} (spent stage, {dvLeft:F1} m/s left)";
                     Debug.Log($"[RelayOrbiter] {_vessel.vesselName}: out of thrust with {dvLeft:F1} m/s left, " +
-                              $"staged stage {next}.");
+                              $"staged stage {next}" + (lights ? "." : " (no engines)."));
                     return Result.Running;
                 case StagingDecision.WouldReleaseSatellite:
                     return Fail($"Out of thrust with {dvLeft:F1} m/s left, and the next stage would release " +
@@ -203,7 +227,7 @@ namespace RelayOrbiter.Plugin
                 case StagingDecision.NothingLeft:
                     return Fail($"Out of fuel with {dvLeft:F1} m/s left: no stage left.");
                 default:
-                    return Fail($"Still out of thrust after staging {_staged} times ({dvLeft:F1} m/s left).");
+                    return Fail($"Still out of thrust after lighting {_staged} stages of engines ({dvLeft:F1} m/s left).");
             }
         }
 
@@ -251,6 +275,9 @@ namespace RelayOrbiter.Plugin
 
         private Result Fail(string error)
         {
+            if (_vessel != null)
+                RoLog.Dbg($"{_vessel.vesselName} burn failed: {error} Burning {_burning}, tail {_tail}, SAS mode {_mode}, " +
+                          $"{RoLog.Propulsion(_vessel)}; {RoLog.Describe(_vessel.orbit)}.");
             Finish();
             Error = error;
             return Result.Failed;

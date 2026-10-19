@@ -52,6 +52,10 @@ namespace RelayOrbiter.Plugin
         private VesselAutopilot.AutopilotMode? _clearMode;
         private double _clearStart;
         private double _clearFromDistance = double.NaN;  // satellite distance right after release
+        private double _recedeSince = double.NaN, _recedeFrom, _nextClearReport;  // drift measured once turned away
+        private const double RecedeWatch        = 3.0;   // s of steady drift before trusting it
+        private const double MinRecedeSpeed     = 0.05;  // m/s apart: drifting off, not lingering
+        private const double MinRecedeClearance = 2.0;   // m apart at least
 
         // RCS push away from a released satellite, before the carrier turns.
         private const double RcsPushSeconds = 3.0;   // s at most
@@ -130,6 +134,41 @@ namespace RelayOrbiter.Plugin
             Log((resumed ? $"Deployment resumed at step {Step}/{Steps}: " : "Deployment started: ") +
                 $"{_separators.Length} satellites, {_parking} parking orbit. " +
                 $"Carrier stays loaded up to {orbit.load / 1000f:F1} km (was {_savedLoad / 1000f:F1} km).");
+            DumpPlan(carrier);
+        }
+
+        // Everything the run was started with, for reading a failure back from the log.
+        private void DumpPlan(Vessel carrier)
+        {
+            foreach (var kv in _state.ToValues()) RoLog.Dbg($"Plan: {kv.Key} = {kv.Value}");
+            RoLog.Dbg($"Plan: legs [{string.Join(" → ", _legs.Select(b => b.bodyName))}], goal altitude " +
+                      $"{RoLog.Km(_goalRadius - (_legs.Count > 0 ? _legs[_legs.Count - 1].Radius : carrier.mainBody.Radius))}, " +
+                      $"goal inclination {(_goalInclination.HasValue ? $"{_goalInclination.Value:F2}°" : "none (keep the arrival plane)")}" +
+                      (_goalLan.HasValue ? $", goal Ω {_goalLan.Value:F2}°" : "") + $", MechJeb planner {_useMechJeb}.");
+            for (int i = 0; i < _steps.Count; ++i)
+                RoLog.Dbg($"Plan: step {i + 1}/{_steps.Count} {_steps[i].Kind} (satellite {_steps[i].Satellite}, " +
+                          $"leg {_steps[i].Leg}, {_steps[i].Seconds:F0} s): {Describe(_steps[i])}");
+            RoLog.Dbg($"Carrier at start: {RoLog.Describe(carrier.orbit)}; {RoLog.Propulsion(carrier)}.");
+        }
+
+        private CelestialBody? _lastBody;   // the active vessel's body at the last Tick (SOI changes)
+        private double _stepStartUT;
+
+        // SOI changes are what transfers and captures hinge on: log each one as it happens.
+        private void TrackBody()
+        {
+            var v = FlightGlobals.ActiveVessel;
+            if (v == null) return;
+            if (_lastBody != null && v.mainBody != _lastBody)
+                Log($"{v.vesselName} changed sphere of influence: {_lastBody.bodyName} → {v.mainBody.bodyName} " +
+                    $"during step {Step}/{Steps} ({CurrentStep}). Now {RoLog.Describe(v.orbit)}.");
+            _lastBody = v.mainBody;
+        }
+
+        private static string Snapshot()
+        {
+            var v = FlightGlobals.ActiveVessel;
+            return v == null ? "no active vessel" : $"{v.vesselName}, {RoLog.Describe(v.orbit)}; {RoLog.Propulsion(v)}";
         }
 
         // The state to save so this deployment can be resumed after a scene reload.
@@ -216,16 +255,20 @@ namespace RelayOrbiter.Plugin
                 return;
             }
 
+            TrackBody();
             var step = _steps[_index];
             if (!_started)
             {
                 _started = true;
+                _stepStartUT = Planetarium.GetUniversalTime();
                 Log($"Step {Step}/{Steps}: {Describe(step)}");
+                RoLog.Dbg($"Step {Step} begins: {Snapshot()}.");
                 Begin(step);
                 if (State != RunState.Running) return;
             }
             if (Advance(step))
             {
+                RoLog.Dbg($"Step {Step} done after {Planetarium.GetUniversalTime() - _stepStartUT:F0} s game time: {Snapshot()}.");
                 _index++;
                 _started = false;
             }
@@ -315,6 +358,16 @@ namespace RelayOrbiter.Plugin
                     break;
 
                 case StepKind.ExecuteNode:
+                {
+                    var nodes = FlightGlobals.ActiveVessel.patchedConicSolver?.maneuverNodes;
+                    if (_skipExecute) RoLog.Dbg("Burn skipped: the node step found nothing to do.");
+                    else if (nodes != null && nodes.Count > 0)
+                        RoLog.Dbg($"Burn: node at UT {nodes[0].UT:F0} (in {_formatTime(nodes[0].UT - now)}), Δv (radial " +
+                                  $"{nodes[0].DeltaV.x:F2}, normal {nodes[0].DeltaV.y:F2}, prograde {nodes[0].DeltaV.z:F2}) = " +
+                                  $"{nodes[0].DeltaV.magnitude:F1} m/s, maneuver mode {(_nextNeedsManeuverMode ? "required" : "optional")}, " +
+                                  $"precise {_nextPrecise}; after it: {RoLog.Describe(nodes[0].nextPatch)}.");
+                    else RoLog.Dbg("Burn: no maneuver node to fly.");
+                }
                     _executor = _skipExecute ? null
                         : new NodeExecutor(FlightGlobals.ActiveVessel, _formatTime, _nextNeedsManeuverMode, precise: _nextPrecise,
                                            protectedParts:
@@ -337,6 +390,8 @@ namespace RelayOrbiter.Plugin
                     var target = Leg(s);
                     if (target == null || _carrier.mainBody == target) break;
                     var patch = EncounterSearch.PatchAround(_carrier.orbit, target);
+                    RoLog.Dbg($"{s.Kind} towards {target.bodyName}: predicted arrival {RoLog.Patch(patch)}" +
+                              (patch == null ? $", closest approach {RoLog.Km(EncounterSearch.ClosestApproach(_carrier.orbit, target, 0.75 * target.orbit.period))}" : "") + ".");
                     if (patch == null)
                     {
                         if (s.Kind == StepKind.WarpToMidcourse) { _until = now; break; }  // correct right away
@@ -344,6 +399,7 @@ namespace RelayOrbiter.Plugin
                         break;
                     }
                     _until = s.Kind == StepKind.WarpToSoi ? patch.StartUT + 10.0 : now + (patch.StartUT - now) / 2.0;
+                    RoLog.Dbg($"{s.Kind}: warping to UT {_until:F0} ({_formatTime(_until - now)} from now).");
                     _warp.Now();
                     break;
                 }
@@ -568,6 +624,8 @@ namespace RelayOrbiter.Plugin
             _clearStart = now;
             _clearFrom = _carrier.ReferenceTransform.up;
             _clearFromDistance = double.NaN;
+            _recedeSince = double.NaN;
+            _nextClearReport = now;
             // Turn 90°: from normal (axial mounts) to prograde, or from prograde (radial) to normal.
             var mode = _orientMode == VesselAutopilot.AutopilotMode.Normal
                 ? VesselAutopilot.AutopilotMode.Prograde
@@ -679,6 +737,26 @@ namespace RelayOrbiter.Plugin
                 Log($"Clear of {Sat(k)}: carrier turned {turned:F0}°, satellite {distance:F1} m further away.");
                 return true;
             }
+            // Turned away and the satellite drifting off steadily: the gap only grows, so
+            // waiting for the full clearance (minutes at a docking port's gentle push, the
+            // timeout every time on a carrier without RCS) gains nothing.
+            if (turnedEnough)
+            {
+                if (double.IsNaN(_recedeSince)) { _recedeSince = now; _recedeFrom = distance; }
+                double watched = now - _recedeSince, speed = watched > 0.0 ? (distance - _recedeFrom) / watched : 0.0;
+                if (now >= _nextClearReport)
+                {
+                    _nextClearReport = now + 5.0;
+                    RoLog.Dbg($"Clearing {Sat(k)}: carrier turned {turned:F0}°, satellite {distance:F2} m further away, " +
+                              $"receding at {speed:F3} m/s over {watched:F0} s (RCS push {_rcsPushing}).");
+                }
+                if (watched >= RecedeWatch && speed >= MinRecedeSpeed && distance >= MinRecedeClearance)
+                {
+                    Log($"Clear of {Sat(k)}: carrier turned {turned:F0}°, satellite {distance:F1} m away and receding " +
+                        $"at {speed:F2} m/s.");
+                    return true;
+                }
+            }
             if (now > _until)
             {
                 Log($"Clearing timed out (carrier turned {turned:F0}°, satellite {distance:F1} m further away): " +
@@ -765,6 +843,7 @@ namespace RelayOrbiter.Plugin
         // ── Travelling to a moon ─────────────────────────────────────────────
 
         private const double CorrectionTolerance = 0.03;  // periapsis within 3%: no correction
+        private const double CaptureTolerance    = 0.5;   // periapsis further off than 50%: no capture there
         private const double MoonPlaneTolerance  = 0.2;   // degrees from the moon's plane: close enough
         private const double CorrectionDelay     = 600.0; // s after the ejection
 
@@ -811,6 +890,11 @@ namespace RelayOrbiter.Plugin
             }
             // Time span to look for the closest approach: about the transfer time.
             double span = moon ? 0.6 * target.orbit.period : 0.75 * target.orbit.period;
+            RoLog.Dbg($"{step.Kind}: from {here.bodyName} to {target.bodyName} ({(moon ? "a moon" : sibling ? "a sibling" : "here")}), " +
+                      $"capture periapsis {RoLog.Km(captureR - target.Radius)}, minimum {RoLog.Km(minPe - target.Radius)}, " +
+                      $"search span {_formatTime(span)}, arrival plane wanted " +
+                      $"{(_goalInclination.HasValue ? $"i {_goalInclination.Value:F2}° (aimed at on the way, the rest after the capture)" : "none: the arrival plane is kept")}; " +
+                      $"carrier {RoLog.Describe(o)}.");
 
             switch (step.Kind)
             {
@@ -848,14 +932,22 @@ namespace RelayOrbiter.Plugin
                 case StepKind.CreateCourseCorrectionNode:
                 {
                     var patch = EncounterSearch.PatchAround(o, target);
-                    double cost = EncounterSearch.Cost(o, target, captureR, minPe, span);
+                    double cost = EncounterSearch.Cost(o, target, captureR, minPe, span, _goalInclination);
+                    RoLog.Dbg($"Course correction check: arrival {RoLog.Patch(patch)}, cost {cost:F4} " +
+                              $"(tolerance {CorrectionTolerance}), periapsis error " +
+                              (patch != null ? $"{RelayOrbiter.Core.EncounterCost.PeriapsisError(patch.PeR, captureR):P1}" : "n/a") +
+                              (patch == null ? $", closest approach {RoLog.Km(EncounterSearch.ClosestApproach(o, target, span))}" : "") + ".");
                     if (patch != null && cost < CorrectionTolerance)
                     {
-                        Skip($"On course: periapsis {(patch.PeR - target.Radius) / 1000.0:F1} km around {target.bodyName}, " +
-                             "no correction needed.");
+                        Skip($"On course: periapsis {(patch.PeR - target.Radius) / 1000.0:F1} km, i {patch.inclination:F1}° " +
+                             $"around {target.bodyName}, no correction needed.");
                         return;
                     }
-                    if (_useMechJeb && MechJebTransfer.Available(_carrier))
+                    // MechJeb's correction aims the periapsis only: with the periapsis already
+                    // right and just the arrival plane off, ours aims both.
+                    bool peOff = patch == null ||
+                                 RelayOrbiter.Core.EncounterCost.PeriapsisError(patch.PeR, captureR) >= CorrectionTolerance;
+                    if (_useMechJeb && peOff && MechJebTransfer.Available(_carrier))
                     {
                         string? error = MechJebTransfer.PlanCorrection(_carrier, target, captureR - target.Radius, Log);
                         if (error == null) { _nextNeedsManeuverMode = true; _nextPrecise = true; break; }
@@ -863,9 +955,12 @@ namespace RelayOrbiter.Plugin
                     }
                     double ut = now + CorrectionDelay;
                     var node = solver.AddManeuverNode(ut);
-                    var search = new EncounterSearch(solver, node, target, captureR, minPe, span);
+                    var search = new EncounterSearch(solver, node, target, captureR, minPe, span, _goalInclination);
                     double range = sibling ? 50.0 : 20.0;
                     var (dv, after) = search.BestCorrection(ut, Vector3d.zero, range);
+                    RoLog.Dbg($"Course correction search (±{range:F0} m/s per axis, node at UT {ut:F0}): best " +
+                              $"(radial {dv.x:F2}, normal {dv.y:F2}, prograde {dv.z:F2}) m/s, cost {cost:F4} → {after:F4}, " +
+                              $"arrival {RoLog.Patch(search.Patch)}, {search.Evaluations} predictions.");
                     if (after >= cost || dv.magnitude < 0.05)
                     {
                         node.RemoveSelf();
@@ -877,11 +972,16 @@ namespace RelayOrbiter.Plugin
                     _nextPrecise = true;
                     var p2 = search.Patch;
                     Log($"Course correction: {dv.magnitude:F2} m/s (radial {dv.x:F2}, normal {dv.y:F2}, prograde " +
-                        $"{dv.z:F2}); periapsis {Pe(patch, target)} → {Pe(p2, target)} ({search.Evaluations} predictions).");
+                        $"{dv.z:F2}); periapsis {Pe(patch, target)} → {Pe(p2, target)}, i " +
+                        $"{(patch != null ? $"{patch.inclination:F1}°" : "n/a")} → {(p2 != null ? $"{p2.inclination:F1}°" : "n/a")} " +
+                        $"({search.Evaluations} predictions).");
                     break;
                 }
                 default:  // capture
                 {
+                    RoLog.Dbg($"Capture check: {RoLog.Describe(o)}, time to periapsis {_formatTime(o.timeToPe)}, " +
+                              $"planned periapsis {RoLog.Km(captureR - target.Radius)}, error " +
+                              $"{RelayOrbiter.Core.EncounterCost.PeriapsisError(o.PeR, captureR):P1} (limit {CaptureTolerance:P0}).");
                     if (here != target) { Fail($"Not around {target.bodyName}."); return; }
                     if (o.eccentricity < 1.0 && o.ApR < target.sphereOfInfluence)
                     {
@@ -889,11 +989,24 @@ namespace RelayOrbiter.Plugin
                         return;
                     }
                     if (o.timeToPe < MinNodeLead) { Fail("Too close to the periapsis to plan the capture."); return; }
+                    // Far from the planned periapsis (the corrections missed): circularizing
+                    // there spends the fuel the rest of the plan needs, on an orbit that may
+                    // not even stay inside the sphere of influence (a Duna capture at
+                    // 47,526 km, aiming at 1,000 km, escaped to the Sun).
+                    if (RelayOrbiter.Core.EncounterCost.PeriapsisError(o.PeR, captureR) > CaptureTolerance)
+                    {
+                        Fail($"Arriving with the periapsis at {Pe(o, target)} around {target.bodyName}, planned " +
+                             $"{(captureR - target.Radius) / 1000.0:F1} km: a capture there would waste the fuel the " +
+                             "deployment needs. Lower the periapsis now (a radial burn far out is cheap), then resume.");
+                        return;
+                    }
                     double ut = now + o.timeToPe;
                     double dv = _planner.CircularizeAt(target.gravParameter, o.PeR, o.semiMajorAxis);
                     AddNode(solver, ut, new Vector3d(0.0, 0.0, dv));
                     Log($"Capture around {target.bodyName}: {dv:F1} m/s at the periapsis " +
-                        $"({(o.PeR - target.Radius) / 1000.0:F1} km).");
+                        $"({(o.PeR - target.Radius) / 1000.0:F1} km), i {o.inclination:F2}°.");
+                    RoLog.Dbg($"Capture node at UT {ut:F0}: speed at periapsis {Math.Sqrt(target.gravParameter * (2.0 / o.PeR - 1.0 / o.semiMajorAxis)):F1} m/s → circular " +
+                              $"{Math.Sqrt(target.gravParameter / o.PeR):F1} m/s; carrier {RoLog.Propulsion(_carrier)}.");
                     break;
                 }
             }
@@ -934,16 +1047,21 @@ namespace RelayOrbiter.Plugin
             span = Math.Max(span, 1.5 * transferTime);
 
             var node = solver.AddManeuverNode(ut0);
-            var search = new EncounterSearch(solver, node, target, captureR, minPe, span);
+            var search = new EncounterSearch(solver, node, target, captureR, minPe, span, _goalInclination);
             (double ut, double cost) best = (ut0, double.MaxValue);
             Vector3d bestDv = Vector3d.zero;
             // Moons: around the window; a planet: the burn point within one parking orbit
             // (the escape direction), the window itself being days wide.
             double width = moon ? o.period / 8.0 : o.period / 2.0;
+            RoLog.Dbg($"Ejection to {target.bodyName}: phase now {phaseNow:F2}°, needed {phaseNeeded:F2}°, wait " +
+                      $"{_formatTime(wait)}, window UT {ut0:F0}, ejection {ejection:F1} m/s, transfer {_formatTime(transferTime)}, " +
+                      $"burn-time scan ±{_formatTime(width)}, span {_formatTime(span)}.");
             foreach (double extra in moon ? new[] { 0.0, 0.005, 0.01, 0.02 } : new[] { 0.0, 0.01, 0.03 })
             {
                 var dv = new Vector3d(0.0, 0.0, ejection * (1.0 + extra));
                 var r = search.BestTime(ut0, width, dv, earliest);
+                RoLog.Dbg($"Ejection scan +{extra:P1} ({dv.z:F1} m/s): best UT {r.ut:F0} (window {r.ut - ut0:+0;-0} s), " +
+                          $"cost {r.cost:F4}.");
                 if (r.cost < best.cost) { best = r; bestDv = dv; }
             }
             if (best.cost >= 1e6)
@@ -957,11 +1075,18 @@ namespace RelayOrbiter.Plugin
             if (best.cost >= CorrectionTolerance)
             {
                 var (dv, cost) = search.BestCorrection(best.ut, bestDv, Math.Max(10.0, 0.03 * ejection));
+                RoLog.Dbg($"Ejection refinement: Δv (radial {dv.x:F2}, normal {dv.y:F2}, prograde {dv.z:F2}) m/s, cost " +
+                          $"{best.cost:F4} → {cost:F4}.");
                 if (cost < best.cost) { bestDv = dv; best = (best.ut, cost); }
                 var r = search.BestTime(best.ut, width / 10.0, bestDv, earliest);
+                RoLog.Dbg($"Ejection retiming: UT {best.ut:F0} → {r.ut:F0}, cost {best.cost:F4} → {r.cost:F4}.");
                 if (r.cost < best.cost) best = r;
             }
-            search.Evaluate(best.ut, bestDv);
+            double final = search.Evaluate(best.ut, bestDv);
+            // KSP's prediction of a long trajectory is sensitive: the same node may predict
+            // a different arrival when evaluated again.
+            RoLog.Dbg($"Ejection chosen: UT {best.ut:F0}, Δv (radial {bestDv.x:F2}, normal {bestDv.y:F2}, prograde " +
+                      $"{bestDv.z:F2}) m/s, search cost {best.cost:F4}, re-evaluated {final:F4}, arrival {RoLog.Patch(search.Patch)}.");
             if (Math.Abs(bestDv.x) > 0.01 || Math.Abs(bestDv.y) > 0.01) _nextNeedsManeuverMode = true;
             var patch = search.Patch;
             string predicted = patch != null
@@ -1078,6 +1203,7 @@ namespace RelayOrbiter.Plugin
             Error = error;
             Status = $"Stopped at step {Step}/{Steps} ({CurrentStep}): {error}";
             Log(Status);
+            RoLog.Dbg($"At the failure: {Snapshot()}.");
         }
 
         private void Stop()
