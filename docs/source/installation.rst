@@ -26,10 +26,11 @@ Install
 Optional: MechJeb 2
 -------------------
 
-Relay Orbiter launches by itself; it doesn't need MechJeb. With `MechJeb 2
-<https://github.com/MuMech/MechJeb2>`_ installed (and MechJeb on the vessel: a MechJeb
-part, or MechJebForAll), it offers MechJeb's ascent and maneuver planner as
-alternatives. Relay Orbiter finds MechJeb at run time.
+Deployments from orbit don't need MechJeb. **Launching from the pad does**: `MechJeb 2
+<https://github.com/MuMech/MechJeb2>`_ installed, and MechJeb on the vessel (a MechJeb
+part, or MechJebForAll). MechJeb flies the ascent while Relay Orbiter stages; its
+maneuver planner is also offered as an alternative to Relay Orbiter's. Relay Orbiter
+finds MechJeb at run time.
 
 Settings
 --------

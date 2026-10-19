@@ -555,6 +555,9 @@ namespace RelayOrbiter.Plugin
         // ── Launch from the ground with MechJeb ──────────────────────────────
 
         // current: the body launched from; body: where the constellation goes.
+        // Relay Orbiter's own ascent as a choice next to MechJeb's (off: MechJeb only).
+        private static readonly bool OwnAscentOffered = false;
+
         private void DrawLaunch(Vessel vessel, Body current, Body body, double? target, string? targetProblem, int n,
                                 List<SatelliteCandidate> order)
         {
@@ -565,14 +568,23 @@ namespace RelayOrbiter.Plugin
                      " Pick another one above (Synchronous, At a moon, Midpoint or Custom).");
                 return;
             }
-            // Who flies the ascent: ours, or MechJeb's when it's there and chosen.
+            // Who flies the ascent: MechJeb 2, Relay Orbiter staging. Relay Orbiter's own ascent
+            // (AscentAutopilot) is set aside for now, not offered: KSP's SAS, which steers it,
+            // let a SRB-heavy rocket tumble at max-q that MechJeb flew fine.
             var mechJeb = MechJebAscent.Installed ? MechJebAscent.For(vessel) : null;
-            if (mechJeb != null)
+            if (OwnAscentOffered && mechJeb != null)
             {
                 _settings.MechJebAscent = Choice.Draw("Ascent autopilot", _settings.MechJebAscent ? 1 : 0,
-                    new[] { "Relay Orbiter (recommended)", "MechJeb 2" }) == 1;
+                    new[] { "Relay Orbiter", "MechJeb 2" }) == 1;
             }
-            bool useMechJeb = mechJeb != null && _settings.MechJebAscent;
+            if (!OwnAscentOffered && mechJeb == null)
+            {
+                Warn(MechJebAscent.Installed
+                    ? "Launching needs a MechJeb core on this vessel (a MechJeb part, or the MechJeb module on its command part)."
+                    : "Launching from the pad needs MechJeb 2 installed: it flies the ascent, Relay Orbiter stages.");
+                return;
+            }
+            bool useMechJeb = mechJeb != null && (!OwnAscentOffered || _settings.MechJebAscent);
 
             bool toMoon = body.Name != current.Name;
             // Travelling on: a low parking orbit around the launch body.
@@ -653,6 +665,19 @@ namespace RelayOrbiter.Plugin
                     _launch = new AscentAutopilot(vessel, launchAlt, inclination, protect, staging, _planner, _formatTime);
                 Debug.Log($"[RelayOrbiter] Launching ({_launch.Name}) to {launchAlt / 1000.0:F1} km, " +
                           $"inclination {inclination:F1}°; continue afterwards: {_continueAfterLaunch}.");
+                RoLog.Dbg($"Launch settings: constellation inclination {(_settings.ChangeInclination ? $"{_settings.InclinationDeg:F1}°" : "unchanged")}, " +
+                          $"latitude {vessel.latitude:F3}°, {protect.Count} protected part(s), stage limit {stageLimit}, " +
+                          $"MechJeb ascent {useMechJeb}; craft {RoLog.Propulsion(vessel)}.");
+#if DEBUG
+                for (int stage = VesselParts.CurrentStage(vessel) - 1; stage >= 0; --stage)
+                {
+                    int s = stage;
+                    var ids = vessel.parts.Where(p => p.inverseStage == s).Select(p => p.flightID).ToList();
+                    if (ids.Count > 0)
+                        RoLog.Dbg($"Launch staging plan: stage {s}: {VesselParts.DescribeParts(vessel, ids)}" +
+                                  (ids.Any(protect.Contains) ? " (satellite parts: never fired by Relay Orbiter)" : "") + ".");
+                }
+#endif
             }
             GUI.enabled = wasEnabled;
             GUILayout.Label(useMechJeb ? "MechJeb flies the ascent, Relay Orbiter stages."

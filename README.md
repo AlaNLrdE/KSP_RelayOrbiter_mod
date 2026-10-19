@@ -5,7 +5,7 @@ Relay Orbiter is a Kerbal Space Program 1.12 mod that takes a carrier vessel hol
 2 to 12 relay satellites and puts them on a shared circular orbit, evenly spaced
 (360°/N apart): it reaches the orbit you choose, releases one satellite per parking
 orbit, switches to each one, circularizes it and comes back to the carrier. From the
-launch pad, it flies the ascent itself first.
+launch pad, MechJeb 2 flies the ascent first while Relay Orbiter stages.
 
 [![Documentation](https://github.com/AlaNLrdE/KSP_RelayOrbiter_mod/actions/workflows/docs.yml/badge.svg)](https://alanlrde.github.io/KSP_RelayOrbiter_mod/)
 
@@ -21,9 +21,9 @@ Full documentation: **<https://alanlrde.github.io/KSP_RelayOrbiter_mod/>**
 - **Optional inclination:** launch to it, or change the plane in orbit.
 - **Full automation:** Hohmann transfer to the target, plane change, release of every
   satellite, vessel switching and circularization burns, with time warp handled.
-- **Launch from the pad:** Relay Orbiter's own ascent (a gravity turn to the launch
-  altitude you choose, then the circularization), or MechJeb's if you prefer. It never
-  stages the satellites.
+- **Launch from the pad (needs MechJeb 2):** MechJeb's ascent to the launch altitude and
+  inclination, Relay Orbiter staging: it drops spent boosters while the core burns and
+  never stages the satellites.
 - **Deploy at another body:** travel first to a moon, another planet or a planet's moon
   (Mun, Duna, Ike...): window, ejection fine-tuned against KSP's prediction, course
   corrections, capture. MechJeb's maneuver planner can be used instead.
@@ -52,7 +52,7 @@ Full documentation: **<https://alanlrde.github.io/KSP_RelayOrbiter_mod/>**
 | | |
 |---|---|
 | KSP | 1.12.x (tested on 1.12.5) |
-| Optional | [MechJeb 2](https://github.com/MuMech/MechJeb2) (2.15), as an alternative ascent and transfer planner |
+| Optional | [MechJeb 2](https://github.com/MuMech/MechJeb2) (2.15): needed to launch from the pad; an alternative transfer planner |
 
 ## Installation
 
