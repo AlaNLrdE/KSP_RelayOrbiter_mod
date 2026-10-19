@@ -49,13 +49,16 @@ public class AscentGuidanceTests
     }
 
     [Fact]
-    public void CircularizesOnlyOutOfTheAtmosphereNearTheApoapsis()
+    public void CircularizationIsPlannedAsSoonAsOutOfTheAtmosphere()
     {
         var g = new AscentGuidance(100_000, 70_000);
-        Assert.Equal(AscentPhase.Coast, g.Update(65_000, 2000, 100_200, 30).Phase);   // still in the air
-        Assert.Equal(AscentPhase.Coast, g.Update(80_000, 2000, 100_200, 200).Phase);  // apoapsis far
-        Assert.Equal(AscentPhase.Circularize, g.Update(95_000, 2100, 100_200, 40).Phase);
+        Assert.Equal(AscentPhase.Coast, g.Update(65_000, 2000, 100_200, 120).Phase);       // still in the air
+        Assert.Equal(AscentPhase.Circularize, g.Update(70_500, 2000, 100_200, 200).Phase); // just out: plan it
     }
+
+    [Fact]
+    public void OutOfTheAtmosphereButShortTopsUpFirst() =>
+        Assert.Equal(AscentPhase.GravityTurn, new AscentGuidance(100_000, 70_000).Update(72_000, 2000, 99_000, 150).Phase);
 
     [Fact]
     public void AirlessBodiesTurnEarly() =>
