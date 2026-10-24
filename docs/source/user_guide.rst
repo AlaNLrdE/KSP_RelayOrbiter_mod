@@ -128,5 +128,18 @@ On the ground (pad, landed or splashed down) the Automation tab shows **Launch t
 - **Continue with the deployment once in orbit:** when MechJeb has circularized,
   the deployment starts on its own, exactly as if you pressed Start.
 
-**Launch with MechJeb** configures MechJeb's ascent (altitude, inclination, autostage) and
+**Launch with MechJeb** configures MechJeb's ascent (altitude and inclination) and
 engages it. **Abort launch** disengages it. Watch the ascent as any MechJeb launch.
+
+MechJeb flies, but **Relay Orbiter stages**:
+
+- MechJeb's autostaging goes through every stage, the satellites' included, even with a
+  staging limit set. It is switched off for the launch and your setting comes back
+  afterwards.
+- Relay Orbiter fires the next stage when the throttle is up and no engine gives thrust,
+  but never a stage holding a satellite's part or separator.
+- The satellites' engines are held off from the launch until each satellite is released.
+- Each stage must burn out completely before the next one fires. Boosters that run dry
+  while the core still burns are not dropped, so design the launcher with plain stages.
+- The carrier's own engines must all fire before the satellites' stages. If one doesn't,
+  the launch section says so and **Launch with MechJeb** stays disabled.

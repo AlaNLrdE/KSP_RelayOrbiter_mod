@@ -5,8 +5,9 @@ namespace RelayOrbiter.Plugin
 {
     // MechJeb 2's ascent autopilot, reached by reflection so MechJeb stays optional.
     // Uses MuMech.VesselExtensions.GetMasterMechJeb(vessel), core.AscentSettings
-    // (DesiredOrbitAltitude, DesiredInclination, Autostage) and core.Ascent (Users,
-    // Enabled, Status), as in MechJeb 2.15.
+    // (DesiredOrbitAltitude, DesiredInclination, Autostage), core.Ascent
+    // (Users, Enabled, Status) and core.Staging (AutoStageLimitRequest/Remove), as in
+    // MechJeb 2.15.
     internal sealed class MechJebAscent
     {
         private const BindingFlags Instance = BindingFlags.Public | BindingFlags.Instance;
@@ -16,11 +17,14 @@ namespace RelayOrbiter.Plugin
 
         private readonly object _settings;
         private readonly object _autopilot;
+        private readonly object? _staging;
+        private object? _limitUser;
 
-        private MechJebAscent(object settings, object autopilot)
+        private MechJebAscent(object settings, object autopilot, object? staging)
         {
             _settings  = settings;
             _autopilot = autopilot;
+            _staging   = staging;
         }
 
         public static bool Installed
@@ -39,7 +43,8 @@ namespace RelayOrbiter.Plugin
                 if (core == null) return null;
                 var settings  = core.GetType().GetField("AscentSettings", Instance)?.GetValue(core);
                 var autopilot = core.GetType().GetProperty("Ascent", Instance)?.GetValue(core, null);
-                return settings != null && autopilot != null ? new MechJebAscent(settings, autopilot) : null;
+                var staging   = core.GetType().GetField("Staging", Instance)?.GetValue(core);
+                return settings != null && autopilot != null ? new MechJebAscent(settings, autopilot, staging) : null;
             }
             catch (System.Exception e)
             {
@@ -48,16 +53,58 @@ namespace RelayOrbiter.Plugin
             }
         }
 
-        // Circular orbit at altitude (m) and inclination (degrees), staging automatically.
-        public void Configure(double altitude, double inclinationDeg)
+        // Circular orbit at altitude (m) and inclination (degrees). autostage: MechJeb stages
+        // by itself; off, someone else must (its own limits don't hold its ascent back from
+        // the satellites' stages). The player's setting comes back on disengage.
+        public void Configure(double altitude, double inclinationDeg, bool autostage)
         {
             SetEditable("DesiredOrbitAltitude", altitude);
             SetEditable("DesiredInclination", inclinationDeg);
-            _settings.GetType().GetProperty("Autostage", Instance)?.SetValue(_settings, true, null);
+            var prop = _settings.GetType().GetProperty("Autostage", Instance);
+            if (prop == null) return;
+            if (_savedAutostage == null) _savedAutostage = prop.GetValue(_settings, null) as bool?;
+            prop.SetValue(_settings, autostage, null);
         }
 
+        private bool? _savedAutostage;
+
         public void Engage(object user)    => CallUsers("Add", user);
-        public void Disengage(object user) => CallUsers("Remove", user);
+
+        public void Disengage(object user)
+        {
+            CallUsers("Remove", user);
+            ReleaseStageLimit();
+            if (_savedAutostage.HasValue)
+                _settings.GetType().GetProperty("Autostage", Instance)?.SetValue(_settings, _savedAutostage.Value, null);
+            _savedAutostage = null;
+        }
+
+        // Never autostage down to `stage` or below: the satellites' stages (their engines
+        // and separators) stay for the deployment. (MechJeb's ascent doesn't always honour
+        // it: Relay Orbiter stages itself during its launches.) False when this MechJeb has
+        // no staging limit to set.
+        public bool LimitStaging(int stage, object user)
+        {
+            bool set = false;
+            if (_staging != null)
+            {
+                var request = _staging.GetType().GetMethod("AutoStageLimitRequest", Instance);
+                if (request != null)
+                {
+                    request.Invoke(_staging, new object[] { stage, user });
+                    _limitUser = user;
+                    set = true;
+                }
+            }
+            return set;
+        }
+
+        private void ReleaseStageLimit()
+        {
+            if (_staging == null || _limitUser == null) return;
+            _staging.GetType().GetMethod("AutoStageLimitRemove", Instance)?.Invoke(_staging, new[] { _limitUser });
+            _limitUser = null;
+        }
 
         public bool Enabled =>
             _autopilot.GetType().GetProperty("Enabled", Instance)?.GetValue(_autopilot, null) as bool? ?? false;

@@ -185,9 +185,8 @@ namespace RelayOrbiter.Plugin
         private Result StageOrFail(double now, double dvLeft)
         {
             if (_protectedParts == null) return Fail($"Out of thrust with {dvLeft:F1} m/s left.");
-            int next = StageManager.CurrentStage - 1;
-            var parts = _vessel.parts.Where(p => p.inverseStage == next).Select(p => p.flightID);
-            switch (StagingGuard.Decide(next, parts, _protectedParts, _staged))
+            var (next, parts, released) = VesselParts.NextStage(_vessel);
+            switch (StagingGuard.Decide(next, parts, _protectedParts, _staged, released))
             {
                 case StagingDecision.Stage:
                     _throttle = 0f;
@@ -214,7 +213,7 @@ namespace RelayOrbiter.Plugin
         // Returns how many were activated.
         private int ActivateStageEngines()
         {
-            int stage = StageManager.CurrentStage;
+            int stage = _vessel.currentStage;
             var off = _vessel.FindPartModulesImplementing<ModuleEngines>()
                 .Where(e => e.isEnabled && !e.EngineIgnited && !e.flameout &&
                             (_protectedParts == null || !_protectedParts.Contains(e.part.flightID)))
