@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using KSP.UI.Screens;
 using RelayOrbiter.Core;
 using UnityEngine;
 using Body = RelayOrbiter.Core.CelestialBody;
@@ -29,6 +30,7 @@ namespace RelayOrbiter.Plugin
         private const double InterplanetaryCorrectionMargin = 50.0;  // m/s for each of the two
         private readonly InterplanetaryPlanner _interplanetary = new InterplanetaryPlanner(new OrbitalMechanics());
         private bool _useMechJeb;
+        private readonly List<uint> _heldSatelliteParts = new List<uint>();  // engines held during a launch
         private readonly Func<double, string>     _formatTime;
         private string _inclinationText = "";
         private MechJebAscent? _launch;           // MechJeb is flying the ascent
@@ -601,11 +603,56 @@ namespace RelayOrbiter.Plugin
             DrawCoverage(vessel, body, body.Radius + target.Value, order, n);
             _continueAfterLaunch = GUILayout.Toggle(_continueAfterLaunch, " Continue with the deployment once in orbit");
 
+            // MechJeb stops autostaging above the satellites' stages: the carrier's own engines
+            // must all fire before that.
+            int stageLimit = SatelliteStageLimit(vessel, order);
+            var satIds = new HashSet<uint>(order.SelectMany(c => c.PartIds).Concat(order.Select(c => c.SeparatorId)));
+            int carrierLast = vessel.FindPartModulesImplementing<ModuleEngines>()
+                .Where(e => !satIds.Contains(e.part.flightID)).Select(e => e.part.inverseStage)
+                .DefaultIfEmpty(int.MaxValue).Min();
+            bool stagingOk = carrierLast >= stageLimit;
+            if (!stagingOk)
+                Warn($"The carrier has an engine in stage {carrierLast}, after a satellite's stage: MechJeb stops " +
+                     $"autostaging at stage {stageLimit} so it never fires the satellites, and would never light that " +
+                     "engine. Move the satellites' separators and engines to the last stages.");
+            else
+                Row("Staging during the ascent", $"Relay Orbiter's, down to stage {stageLimit} (satellites below)");
+
+            // The carrier's own stages must reach orbit: the satellites' Δv isn't available.
+            double needed = LaunchPlanner.AscentDeltaV(current, launchAlt, inclination);
+            double carrierDv = CarrierAscentDeltaV(vessel, stageLimit);
+            if (!double.IsNaN(carrierDv))
+            {
+                Row("Carrier's Δv to orbit", $"{Ms(carrierDv)} in stages {stageLimit} and up (needs about {Ms(needed)})",
+                    carrierDv >= needed ? _ok : _warn);
+                if (carrierDv < needed)
+                    Warn("The carrier's own stages may not reach orbit: the satellites' fuel can't be used for the ascent. " +
+                         "Add fuel to the carrier, or launch to a lower inclination (a retrograde one costs most).");
+            }
+
             bool wasEnabled = GUI.enabled;
-            GUI.enabled = wasEnabled && (!_settings.ChangeInclination || _inclinationValid);
+            GUI.enabled = wasEnabled && stagingOk && (!_settings.ChangeInclination || _inclinationValid);
             if (GUILayout.Button("Launch with MechJeb"))
             {
-                mechJeb.Configure(launchAlt, inclination);
+                // MechJeb flies, Relay Orbiter stages: MechJeb's autostaging went through the
+                // satellites' stages even with its staging limit set.
+                mechJeb.Configure(launchAlt, inclination, autostage: false);
+                _launchProtected.Clear();
+                _launchProtected.UnionWith(order.SelectMany(c => c.PartIds).Concat(order.Select(c => c.SeparatorId)));
+                _stager = new AscentStager();
+                _stagingStopped = false;
+                _awaitingStage = null;
+                // MechJeb's autostaging keeps going while there's no thrust, all the way down to
+                // stage 0 unless told otherwise: it would ignite (and release) the satellites.
+                int limit = SatelliteStageLimit(vessel, order);
+                bool limited = mechJeb.LimitStaging(limit, this);
+                // And whatever MechJeb stages, the satellites' engines stay off during the ascent.
+                _heldSatelliteParts.Clear();
+                _heldSatelliteParts.AddRange(order.SelectMany(c => c.PartIds));
+                int held = VesselParts.HoldEngines(vessel, _heldSatelliteParts, true);
+                Debug.Log($"[RelayOrbiter] Holding {held} satellite engine(s) off during the ascent.");
+                Debug.Log($"[RelayOrbiter] MechJeb autostaging stops at stage {limit} (the satellites' stages are " +
+                          $"below it){(limited ? "" : ": this MechJeb has no staging limit, watch the staging")}.");
                 mechJeb.Engage(this);
                 _launch = mechJeb;
                 Debug.Log($"[RelayOrbiter] Launching with MechJeb to {launchAlt / 1000.0:F1} km, " +
@@ -613,6 +660,27 @@ namespace RelayOrbiter.Plugin
             }
             GUI.enabled = wasEnabled;
             GUILayout.Label("MechJeb flies the ascent and stages; watch it like any MechJeb launch.");
+        }
+
+        // KSP's own Δv for the stages from `lowest` up: the first to fire at sea level, the
+        // others in vacuum. NaN until KSP has computed it.
+        private static double CarrierAscentDeltaV(Vessel vessel, int lowest)
+        {
+            var dv = vessel.VesselDeltaV;
+            if (dv == null || !dv.IsReady || dv.OperatingStageInfo == null) return double.NaN;
+            var stages = dv.OperatingStageInfo.Where(st => st.stage >= lowest).ToList();
+            if (stages.Count == 0) return double.NaN;
+            int first = stages.Max(st => st.stage);
+            return stages.Sum(st => st.stage == first ? st.deltaVatASL : st.deltaVinVac);
+        }
+
+        // One above the highest stage holding a satellite's part or separator.
+        private static int SatelliteStageLimit(Vessel vessel, List<SatelliteCandidate> order)
+        {
+            var ids = new HashSet<uint>(order.SelectMany(c => c.PartIds).Concat(order.Select(c => c.SeparatorId)));
+            int highest = vessel.parts.Where(p => ids.Contains(p.flightID)).Select(p => p.inverseStage)
+                                .DefaultIfEmpty(-1).Max();
+            return highest + 1;
         }
 
         private void DrawLaunching()
@@ -628,19 +696,82 @@ namespace RelayOrbiter.Plugin
             if (_launch == null) return;
             var vessel = FlightGlobals.ActiveVessel;
             if (vessel == null) { StopLaunch("Launch stopped: no active vessel."); return; }
+            // A held satellite engine lit anyway (a mod ignoring the disabled module): off again.
+            int lit = VesselParts.ShutHeldEngines(vessel, _heldSatelliteParts);
+            if (lit > 0) Debug.Log($"[RelayOrbiter] Shut down {lit} satellite engine(s) lit during the ascent.");
+            StageAscent(vessel);
             // MechJeb disengages itself once the orbit is circularized.
             if (vessel.situation == Vessel.Situations.ORBITING && !_launch.Enabled)
             {
+                _launch.Disengage(this);  // also lifts the staging limit
                 _launch = null;
+                _heldSatelliteParts.Clear();  // still held: the deployment frees each one at its release
                 _autoStart = _continueAfterLaunch;
                 Debug.Log($"[RelayOrbiter] In orbit after the launch: {vessel.orbit.ApA / 1000.0:F1} x " +
                           $"{vessel.orbit.PeA / 1000.0:F1} km, {vessel.orbit.inclination:F2}°.");
             }
         }
 
+        // Our autostaging for MechJeb's ascent: when MechJeb wants thrust and nothing burns,
+        // the next stage, unless it holds a satellite part or separator.
+        private AscentStager _stager = new AscentStager();
+        private readonly HashSet<uint> _launchProtected = new HashSet<uint>();
+        private bool _stagingStopped;
+        private int? _awaitingStage;        // staged, not yet showing as fired
+        private double _stagedAt;
+        private const double StageConfirmTimeout = 3.0;  // s for a staging to show
+
+        private void StageAscent(Vessel vessel)
+        {
+            double now = Time.time;
+            // Never stage again before the last staging shows: staging blind fired the stage
+            // after the one checked.
+            if (_awaitingStage.HasValue)
+            {
+                if (vessel.currentStage <= _awaitingStage.Value) _awaitingStage = null;
+                else if (now - _stagedAt < StageConfirmTimeout) return;
+                else
+                {
+                    if (!_stagingStopped)
+                        Debug.Log($"[RelayOrbiter] Ascent: stage {_awaitingStage} never showed as fired: " +
+                                  "not staging any more.");
+                    _stagingStopped = true;
+                    return;
+                }
+            }
+            if (_stagingStopped) return;
+            var (thrust, _) = VesselParts.ActiveEngines(vessel);
+            if (!_stager.ShouldStage(now, thrust, vessel.ctrlState.mainThrottle)) return;
+            var (next, parts, released) = VesselParts.NextStage(vessel);
+            var decision = StagingGuard.Decide(next, parts, _launchProtected, _stager.StagedSinceThrust, released);
+            if (decision == StagingDecision.Stage)
+            {
+                StageManager.ActivateNextStage();
+                _stager.Staged(now);
+                _awaitingStage = next;
+                _stagedAt = now;
+                Debug.Log($"[RelayOrbiter] Ascent: no thrust, staged stage {next}" +
+                          (released.Count > 0 ? $" (drops {released.Count} part(s))." : "."));
+                return;
+            }
+            _stager.Staged(now, fired: false);
+            if (_stagingStopped) return;
+            _stagingStopped = true;
+            Debug.Log($"[RelayOrbiter] Ascent: no thrust, but not staging stage {next}: " + decision switch
+            {
+                StagingDecision.WouldReleaseSatellite => "it holds or drops a satellite. The carrier is out of fuel: check its stages.",
+                StagingDecision.NothingLeft           => "no stage left.",
+                _                                     => $"already staged {StagingGuard.MaxStagesPerBurn} times without thrust.",
+            });
+        }
+
         private void StopLaunch(string why)
         {
             if (_launch == null) return;
+            var vessel = FlightGlobals.ActiveVessel;
+            if (vessel != null && _heldSatelliteParts.Count > 0)
+                VesselParts.HoldEngines(vessel, _heldSatelliteParts, false);  // aborted: give them back
+            _heldSatelliteParts.Clear();
             _launch.Disengage(this);
             _launch = null;
             _autoStart = false;
@@ -740,6 +871,10 @@ namespace RelayOrbiter.Plugin
             }
             if (GUILayout.Button("Discard it"))
             {
+                // Its satellites still on board had their engines held: give them back.
+                var aboard = FlightGlobals.Vessels.FirstOrDefault(v => v != null && v.persistentId == pending.Carrier);
+                if (aboard != null && aboard.loaded)
+                    VesselParts.HoldEngines(aboard, pending.SatelliteParts.SelectMany(p => p), false);
                 Debug.Log("[RelayOrbiter] Interrupted deployment discarded.");
                 RelayOrbiterScenario.Pending = null;
             }
