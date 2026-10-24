@@ -109,6 +109,9 @@ namespace RelayOrbiter.Plugin
             _parkingUT        = state.ParkingUT;
             _lastReleased     = state.LastReleased;
             _resumePending    = resumed;
+            // The satellites still on board keep their engines off until they are released.
+            int held = VesselParts.HoldEngines(carrier, SatellitesStillAboard(), true);
+            if (held > 0) Log($"Holding {held} satellite engine(s) off until each satellite is released.");
 
             var orbit = carrier.vesselRanges.orbit;
             _savedLoad   = resumed ? state.SavedLoad : orbit.load;
@@ -366,6 +369,9 @@ namespace RelayOrbiter.Plugin
                         Log($"{Sat(s.Satellite)} was already released.");
                         return true;
                     }
+                    // Its engines were held while on board: it needs them from now on.
+                    int freed = VesselParts.HoldEngines(_carrier, _satellitePartIds[s.Satellite], false);
+                    if (freed > 0) Log($"{Sat(s.Satellite)}: {freed} engine(s) enabled again for its own burns.");
                     if (part == null || !VesselParts.Release(part))
                     {
                         Fail($"Could not release {Sat(s.Satellite)}.");
@@ -921,6 +927,11 @@ namespace RelayOrbiter.Plugin
                 $"({search.Evaluations} predictions).");
         }
 
+        // Parts of the satellites not released yet (their separators excluded).
+        private IEnumerable<uint> SatellitesStillAboard() =>
+            Enumerable.Range(_lastReleased + 1, Math.Max(0, _separators.Length - _lastReleased - 1))
+                      .SelectMany(k => _satellitePartIds[k]);
+
         // Parts the carrier must never stage away: the satellites not released yet,
         // with their separators.
         private ISet<uint> SatellitesOnBoard()
@@ -1025,6 +1036,12 @@ namespace RelayOrbiter.Plugin
 
         private void Stop()
         {
+            // Stopped early: the satellites still on board get their engines back.
+            if (_carrier != null && _carrier.loaded)
+            {
+                int freed = VesselParts.HoldEngines(_carrier, SatellitesStillAboard(), false);
+                if (freed > 0) Log($"{freed} satellite engine(s) enabled again.");
+            }
             StopRcs();
             RestoreRanges();
             _executor?.Finish();

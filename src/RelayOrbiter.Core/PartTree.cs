@@ -81,6 +81,17 @@ namespace RelayOrbiter.Core
             return new ReleasePlan(null, stats, massAfterFirst, carrierThrust, carrierIsp);
         }
 
+        // Every part that would leave the vessel if these parts fired (a stage's parts):
+        // what their decouplers and separating ports cut loose.
+        public IReadOnlyCollection<uint> ReleasedBy(IEnumerable<uint> firing)
+        {
+            var released = new HashSet<uint>();
+            foreach (uint id in firing)
+                if (_byId.TryGetValue(id, out var p) && DetachedSide(p) is { } side)
+                    released.UnionWith(side);
+            return released;
+        }
+
         // ── Helpers ───────────────────────────────────────────────────────────
 
         // Part ids that leave the vessel when p fires, or null if p is not a separator.
