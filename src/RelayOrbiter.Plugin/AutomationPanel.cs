@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using KSP.UI.Screens;
 using RelayOrbiter.Core;
 using UnityEngine;
 using Body = RelayOrbiter.Core.CelestialBody;
@@ -29,9 +30,11 @@ namespace RelayOrbiter.Plugin
         private const double InterplanetaryCorrectionMargin = 50.0;  // m/s for each of the two
         private readonly InterplanetaryPlanner _interplanetary = new InterplanetaryPlanner(new OrbitalMechanics());
         private bool _useMechJeb;
+        private readonly List<uint> _heldSatelliteParts = new List<uint>();  // engines held during a launch
         private readonly Func<double, string>     _formatTime;
         private string _inclinationText = "";
-        private MechJebAscent? _launch;           // MechJeb is flying the ascent
+        private ILaunchAutopilot? _launch;        // a launch in progress (ours or MechJeb's)
+        private string _launchKmText = "";
         private bool _continueAfterLaunch = true;
         private bool _autoStart;                  // in orbit after a launch: start on its own
         private bool _inclinationValid = true;
@@ -271,6 +274,7 @@ namespace RelayOrbiter.Plugin
             _extendPanels = GUILayout.Toggle(_extendPanels, " Extend the satellites' solar panels before release");
             NodeExecutor.AutoActivateEngines = GUILayout.Toggle(NodeExecutor.AutoActivateEngines,
                 " Activate the current stage's engines when none is running before a burn");
+            Warp.Enabled = GUILayout.Toggle(Warp.Enabled, " Use time warp (off: you warp, burns still start on time)");
 
             // Names: callsign unique around this body, orbit tag, inclination.
             string callsign = walker?.Callsign ??
@@ -352,11 +356,8 @@ namespace RelayOrbiter.Plugin
         // a carrier can't deploy: launched one by one, then Maintenance puts each in its slot).
         private WalkerDeploy? DrawDeployShape(Vessel vessel, Body selected, CelestialBody? moon, int n, double rGoal)
         {
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Shape", GUILayout.Width(LabelW - 110f));
-            _deployShape = GUILayout.SelectionGrid(_deployShape,
-                new[] { "Ring", "Walker Δ plane", "Walker ★ plane", "Molniya, Tundra…" }, 2);
-            GUILayout.EndHorizontal();
+            _deployShape = Choice.Draw("Shape", _deployShape,
+                new[] { "Ring", "Walker Δ plane", "Walker ★ plane", "Molniya, Tundra…" }, 80f);
             if (_deployShape == DeployRing) { _goalPlane = null; return null; }
             if (_deployShape == DeployOnePerPlane)
             {
@@ -446,10 +447,8 @@ namespace RelayOrbiter.Plugin
             GUILayout.Label($"Trip to {GameBodyDatabase.NameOf(dest)}", _header);
             if (MechJebTransfer.Installed)
             {
-                GUILayout.BeginHorizontal();
-                GUILayout.Label("Transfer planner", GUILayout.Width(LabelW));
-                _useMechJeb = GUILayout.Toolbar(_useMechJeb ? 1 : 0, new[] { "Relay Orbiter (recommended)", "MechJeb 2" }) == 1;
-                GUILayout.EndHorizontal();
+                _useMechJeb = Choice.Draw("Transfer planner", _useMechJeb ? 1 : 0,
+                                          new[] { "Relay Orbiter (recommended)", "MechJeb 2" }) == 1;
                 if (_useMechJeb)
                     GUILayout.Label("MechJeb plans the ejection and the course corrections; Relay Orbiter flies them " +
                                     "and does the rest (falls back to its own planner if MechJeb can't).", _ok);
@@ -559,28 +558,28 @@ namespace RelayOrbiter.Plugin
         private void DrawLaunch(Vessel vessel, Body current, Body body, double? target, string? targetProblem, int n,
                                 List<SatelliteCandidate> order)
         {
-            GUILayout.Label("Launch to orbit (MechJeb)", _header);
+            GUILayout.Label("Launch to orbit", _header);
             if (!target.HasValue)
             {
                 Warn((targetProblem ?? "Choose a valid target altitude above.") +
                      " Pick another one above (Synchronous, At a moon, Midpoint or Custom).");
                 return;
             }
-            if (!MechJebAscent.Installed)
+            // Who flies the ascent: ours, or MechJeb's when it's there and chosen.
+            var mechJeb = MechJebAscent.Installed ? MechJebAscent.For(vessel) : null;
+            if (mechJeb != null)
             {
-                Warn("MechJeb 2 is not installed: launch by hand, then come back to this tab in orbit.");
-                return;
+                _settings.MechJebAscent = Choice.Draw("Ascent autopilot", _settings.MechJebAscent ? 1 : 0,
+                    new[] { "Relay Orbiter (recommended)", "MechJeb 2" }) == 1;
             }
-            var mechJeb = MechJebAscent.For(vessel);
-            if (mechJeb == null)
-            {
-                Warn("This vessel has no MechJeb: add a MechJeb part (or install MechJebForAll), or launch by hand.");
-                return;
-            }
+            bool useMechJeb = mechJeb != null && _settings.MechJebAscent;
 
             bool toMoon = body.Name != current.Name;
             // Travelling on: a low parking orbit around the launch body.
-            double launchAlt = toMoon ? LaunchPlanner.ParkingAltitude(current) : LaunchPlanner.LaunchAltitude(body, target.Value);
+            double autoAlt = toMoon ? LaunchPlanner.ParkingAltitude(current) : LaunchPlanner.LaunchAltitude(body, target.Value);
+            double? chosen = DrawLaunchAltitude(current, autoAlt);
+            if (chosen == null) return;
+            double launchAlt = chosen.Value;
             DrawInclination(Math.Abs(vessel.latitude));
             // Travelling to a moon: launch into its orbital plane's inclination (the node is
             // matched in orbit); the target inclination applies around the moon.
@@ -593,32 +592,129 @@ namespace RelayOrbiter.Plugin
                                : moonBody != null && moonBody.referenceBody == vessel.mainBody ? moonBody.orbit.inclination
                                : moonBody != null ? 0.0
                                : _settings.ChangeInclination ? _settings.InclinationDeg : 0.0;
-            Row("Launch to", $"{Km(launchAlt)} circular, inclination {inclination:F1}°" +
+            Row("Orbit after the launch", $"{Km(launchAlt)} circular, inclination {inclination:F1}°" +
                              (inclination < Math.Abs(vessel.latitude) ? " (or the launch site's latitude)" : ""));
             Row("Then", (toMoon ? $"travel to {body.Name}, capture at {Km(target.Value)}, "
                          : launchAlt < target.Value - 1.0 ? $"transfer to {Km(target.Value)}, " : "") +
                         $"deploy {n} satellites, {Resonance.SpacingDeg(n):F0}° apart");
             DrawCoverage(vessel, body, body.Radius + target.Value, order, n);
             _continueAfterLaunch = GUILayout.Toggle(_continueAfterLaunch, " Continue with the deployment once in orbit");
+            Warp.Enabled = GUILayout.Toggle(Warp.Enabled, " Use time warp (to the circularization, and later waits)");
+
+            // MechJeb stops autostaging above the satellites' stages: the carrier's own engines
+            // must all fire before that.
+            int stageLimit = SatelliteStageLimit(vessel, order);
+            var satIds = new HashSet<uint>(order.SelectMany(c => c.PartIds).Concat(order.Select(c => c.SeparatorId)));
+            int carrierLast = vessel.FindPartModulesImplementing<ModuleEngines>()
+                .Where(e => !satIds.Contains(e.part.flightID)).Select(e => e.part.inverseStage)
+                .DefaultIfEmpty(int.MaxValue).Min();
+            bool stagingOk = carrierLast >= stageLimit;
+            if (!stagingOk)
+                Warn($"The carrier has an engine in stage {carrierLast}, after a satellite's stage: the launch stops " +
+                     $"staging at stage {stageLimit} so it never fires the satellites, and would never light that " +
+                     "engine. Move the satellites' separators and engines to the last stages.");
+            else
+                Row("Staging during the ascent", $"Relay Orbiter's, down to stage {stageLimit} (satellites below)");
+
+            // The carrier's own stages must reach orbit: the satellites' Δv isn't available.
+            double needed = LaunchPlanner.AscentDeltaV(current, launchAlt, inclination);
+            double carrierDv = CarrierAscentDeltaV(vessel, stageLimit);
+            if (!double.IsNaN(carrierDv))
+            {
+                Row("Carrier's Δv to orbit", $"{Ms(carrierDv)} in stages {stageLimit} and up (needs about {Ms(needed)})",
+                    carrierDv >= needed ? _ok : _warn);
+                if (carrierDv < needed)
+                    Warn("The carrier's own stages may not reach orbit: the satellites' fuel can't be used for the ascent. " +
+                         "Add fuel to the carrier, or launch to a lower inclination (a retrograde one costs most).");
+            }
 
             bool wasEnabled = GUI.enabled;
-            GUI.enabled = wasEnabled && (!_settings.ChangeInclination || _inclinationValid);
-            if (GUILayout.Button("Launch with MechJeb"))
+            GUI.enabled = wasEnabled && stagingOk && (!_settings.ChangeInclination || _inclinationValid);
+            if (GUILayout.Button(useMechJeb ? "Launch with MechJeb" : "Launch"))
             {
-                mechJeb.Configure(launchAlt, inclination);
-                mechJeb.Engage(this);
-                _launch = mechJeb;
-                Debug.Log($"[RelayOrbiter] Launching with MechJeb to {launchAlt / 1000.0:F1} km, " +
+                var protect = order.SelectMany(c => c.PartIds).Concat(order.Select(c => c.SeparatorId)).ToList();
+                var staging = new LaunchStaging(protect);
+                // Whatever fires, the satellites' engines stay off during the ascent.
+                _heldSatelliteParts.Clear();
+                _heldSatelliteParts.AddRange(order.SelectMany(c => c.PartIds));
+                int held = VesselParts.HoldEngines(vessel, _heldSatelliteParts, true);
+                Debug.Log($"[RelayOrbiter] Holding {held} satellite engine(s) off during the ascent; staging stops at " +
+                          $"stage {stageLimit}.");
+                if (useMechJeb)
+                {
+                    // MechJeb flies, Relay Orbiter stages: MechJeb's autostaging went through the
+                    // satellites' stages even with its staging limit set.
+                    mechJeb!.Configure(launchAlt, inclination, autostage: false);
+                    mechJeb.LimitStaging(stageLimit, this);
+                    mechJeb.Engage(this);
+                    _launch = new MechJebLaunch(mechJeb, staging, this);
+                }
+                else
+                    _launch = new AscentAutopilot(vessel, launchAlt, inclination, protect, staging, _planner, _formatTime);
+                Debug.Log($"[RelayOrbiter] Launching ({_launch.Name}) to {launchAlt / 1000.0:F1} km, " +
                           $"inclination {inclination:F1}°; continue afterwards: {_continueAfterLaunch}.");
             }
             GUI.enabled = wasEnabled;
-            GUILayout.Label("MechJeb flies the ascent and stages; watch it like any MechJeb launch.");
+            GUILayout.Label(useMechJeb ? "MechJeb flies the ascent, Relay Orbiter stages."
+                                       : "Relay Orbiter flies the ascent: a gravity turn, then the circularization.");
+        }
+
+        // The orbit to launch to: automatic (a low orbit, or the target when lower), or typed in.
+        private double? DrawLaunchAltitude(Body current, double autoAlt)
+        {
+            bool custom = !double.IsNaN(_settings.LaunchAltitudeKm);
+            int mode = Choice.Draw("Launch to", custom ? 1 : 0, new[] { $"Auto ({autoAlt / 1000.0:F0} km)", "Custom" });
+            if (mode == 0) { _settings.LaunchAltitudeKm = double.NaN; return autoAlt; }
+            if (!custom)
+            {
+                _settings.LaunchAltitudeKm = autoAlt / 1000.0;
+                _launchKmText = _settings.LaunchAltitudeKm.ToString("F0", CultureInfo.InvariantCulture);
+            }
+            if (_launchKmText.Length == 0)
+                _launchKmText = _settings.LaunchAltitudeKm.ToString("F0", CultureInfo.InvariantCulture);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Launch altitude [km]", GUILayout.Width(LabelW));
+            _launchKmText = GUILayout.TextField(_launchKmText, GUILayout.Width(100f));
+            GUILayout.EndHorizontal();
+            double min = (current.Atm > 0.0 ? current.Atm : 0.0) + LaunchMargin;
+            double max = current.Soi.HasValue ? current.Soi.Value - current.Radius : double.MaxValue;
+            if (!double.TryParse(_launchKmText, NumberStyles.Float, CultureInfo.InvariantCulture, out double km) ||
+                km * 1000.0 < min || km * 1000.0 >= max)
+            {
+                Warn($"Enter a launch altitude above {Km(min)}" + (current.Soi.HasValue ? $" and below {Km(max)}." : "."));
+                return null;
+            }
+            _settings.LaunchAltitudeKm = km;
+            return km * 1000.0;
+        }
+
+        private const double LaunchMargin = 5_000.0;  // m above the atmosphere, at least
+
+        // KSP's own Δv for the stages from `lowest` up: the first to fire at sea level, the
+        // others in vacuum. NaN until KSP has computed it.
+        private static double CarrierAscentDeltaV(Vessel vessel, int lowest)
+        {
+            var dv = vessel.VesselDeltaV;
+            if (dv == null || !dv.IsReady || dv.OperatingStageInfo == null) return double.NaN;
+            var stages = dv.OperatingStageInfo.Where(st => st.stage >= lowest).ToList();
+            if (stages.Count == 0) return double.NaN;
+            int first = stages.Max(st => st.stage);
+            return stages.Sum(st => st.stage == first ? st.deltaVatASL : st.deltaVinVac);
+        }
+
+        // One above the highest stage holding a satellite's part or separator.
+        private static int SatelliteStageLimit(Vessel vessel, List<SatelliteCandidate> order)
+        {
+            var ids = new HashSet<uint>(order.SelectMany(c => c.PartIds).Concat(order.Select(c => c.SeparatorId)));
+            int highest = vessel.parts.Where(p => ids.Contains(p.flightID)).Select(p => p.inverseStage)
+                                .DefaultIfEmpty(-1).Max();
+            return highest + 1;
         }
 
         private void DrawLaunching()
         {
-            GUILayout.Label("Launching with MechJeb", _header);
-            GUILayout.Label(_launch!.Status, _ok);
+            GUILayout.Label($"Launching ({_launch!.Name})", _header);
+            GUILayout.Label(_launch.Status, _ok);
             if (_continueAfterLaunch) GUILayout.Label("The deployment starts on its own once in orbit.");
             if (GUILayout.Button("Abort launch")) StopLaunch("Launch aborted by the player.");
         }
@@ -628,10 +724,16 @@ namespace RelayOrbiter.Plugin
             if (_launch == null) return;
             var vessel = FlightGlobals.ActiveVessel;
             if (vessel == null) { StopLaunch("Launch stopped: no active vessel."); return; }
-            // MechJeb disengages itself once the orbit is circularized.
-            if (vessel.situation == Vessel.Situations.ORBITING && !_launch.Enabled)
+            // A held satellite engine lit anyway (a mod ignoring the disabled module): off again.
+            int lit = VesselParts.ShutHeldEngines(vessel, _heldSatelliteParts);
+            if (lit > 0) Debug.Log($"[RelayOrbiter] Shut down {lit} satellite engine(s) lit during the ascent.");
+            _launch.Tick(vessel);
+            if (_launch.Error != null) { StopLaunch("Launch stopped: " + _launch.Error); return; }
+            if (_launch.InOrbit)
             {
+                _launch.Stop();  // MechJeb: lifts the staging limit, gives its autostage setting back
                 _launch = null;
+                _heldSatelliteParts.Clear();  // still held: the deployment frees each one at its release
                 _autoStart = _continueAfterLaunch;
                 Debug.Log($"[RelayOrbiter] In orbit after the launch: {vessel.orbit.ApA / 1000.0:F1} x " +
                           $"{vessel.orbit.PeA / 1000.0:F1} km, {vessel.orbit.inclination:F2}°.");
@@ -641,7 +743,11 @@ namespace RelayOrbiter.Plugin
         private void StopLaunch(string why)
         {
             if (_launch == null) return;
-            _launch.Disengage(this);
+            var vessel = FlightGlobals.ActiveVessel;
+            if (vessel != null && _heldSatelliteParts.Count > 0)
+                VesselParts.HoldEngines(vessel, _heldSatelliteParts, false);  // aborted: give them back
+            _heldSatelliteParts.Clear();
+            _launch.Stop();
             _launch = null;
             _autoStart = false;
             Debug.Log("[RelayOrbiter] " + why);
@@ -740,6 +846,10 @@ namespace RelayOrbiter.Plugin
             }
             if (GUILayout.Button("Discard it"))
             {
+                // Its satellites still on board had their engines held: give them back.
+                var aboard = FlightGlobals.Vessels.FirstOrDefault(v => v != null && v.persistentId == pending.Carrier);
+                if (aboard != null && aboard.loaded)
+                    VesselParts.HoldEngines(aboard, pending.SatelliteParts.SelectMany(p => p), false);
                 Debug.Log("[RelayOrbiter] Interrupted deployment discarded.");
                 RelayOrbiterScenario.Pending = null;
             }

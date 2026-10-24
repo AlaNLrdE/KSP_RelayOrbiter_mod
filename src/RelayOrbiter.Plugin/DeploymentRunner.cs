@@ -17,6 +17,9 @@ namespace RelayOrbiter.Plugin
         private const double MinClearance  = 10.0;  // m between carrier and satellite before switching
         private const double MinTurnDeg    = 60.0;  // carrier turn that moves its end off the satellite's path
         private const double ClearDelay    = 2.0;   // s after release before the carrier starts turning
+        private const double OrientSasWait = 10.0;  // s for SAS to accept the orientation mode (just out of warp)
+        private const double ReleaseSettle = 1.0;     // s of physics before a release
+        private const double SeparationTimeout = 5.0; // s for a released satellite to become its own vessel
         private const double MinNodeLead   = 60.0;  // s: never place a transfer node closer than this
         // KSP unloads orbiting vessels 2.5 km from the active one; switching back to an
         // unloaded carrier reloads the scene and ends the run. Keep it loaded meanwhile.
@@ -69,6 +72,9 @@ namespace RelayOrbiter.Plugin
         private NodeExecutor? _executor;
         private readonly Warp _warp = new Warp();
         private bool _orienting;  // false when orientation was skipped
+        private bool _modeSet;    // SAS has accepted the orientation mode
+        private double _orientSince;
+        private double _unpackedSince = double.NaN;  // Release: since when the carrier has physics
         private VesselAutopilot.AutopilotMode _orientMode;
         private double _alignedSince = double.NaN;
         // Parking burn time, fixed at the first warp: on a near-circular orbit the
@@ -109,6 +115,9 @@ namespace RelayOrbiter.Plugin
             _parkingUT        = state.ParkingUT;
             _lastReleased     = state.LastReleased;
             _resumePending    = resumed;
+            // The satellites still on board keep their engines off until they are released.
+            int held = VesselParts.HoldEngines(carrier, SatellitesStillAboard(), true);
+            if (held > 0) Log($"Holding {held} satellite engine(s) off until each satellite is released.");
 
             var orbit = carrier.vesselRanges.orbit;
             _savedLoad   = resumed ? state.SavedLoad : orbit.load;
@@ -267,7 +276,8 @@ namespace RelayOrbiter.Plugin
                     break;
 
                 case StepKind.Release:
-                    _released = false;  // fired in Advance, once the carrier has physics
+                    _released = false;  // fired in Advance, once the carrier has had physics a moment
+                    _unpackedSince = _carrier.packed ? double.NaN : now;
                     break;
                 case StepKind.Wait:
                     _until = now + s.Seconds;
@@ -355,8 +365,11 @@ namespace RelayOrbiter.Plugin
 
                 case StepKind.Release:
                 {
-                    if (_carrier.packed) { Status = "Waiting for physics before the release"; return false; }
+                    if (_carrier.packed) { _unpackedSince = double.NaN; Status = "Waiting for physics before the release"; return false; }
                     if (_released) return true;
+                    // Just out of time warp the vessel is still settling: let it have physics for a moment.
+                    if (double.IsNaN(_unpackedSince)) _unpackedSince = now;
+                    if (now - _unpackedSince < ReleaseSettle) { Status = "Settling before the release"; return false; }
                     _released = true;
                     _lastReleased = s.Satellite;
                     var part = VesselParts.Find(_carrier, _separators[s.Satellite]);
@@ -366,6 +379,9 @@ namespace RelayOrbiter.Plugin
                         Log($"{Sat(s.Satellite)} was already released.");
                         return true;
                     }
+                    // Its engines were held while on board: it needs them from now on.
+                    int freed = VesselParts.HoldEngines(_carrier, _satellitePartIds[s.Satellite], false);
+                    if (freed > 0) Log($"{Sat(s.Satellite)}: {freed} engine(s) enabled again for its own burns.");
                     if (part == null || !VesselParts.Release(part))
                     {
                         Fail($"Could not release {Sat(s.Satellite)}.");
@@ -453,16 +469,20 @@ namespace RelayOrbiter.Plugin
                 ? VesselAutopilot.AutopilotMode.Normal
                 : VesselAutopilot.AutopilotMode.Prograde;
             _orientMode = mode;
-            _orienting = axis != Vector3.zero && ap.CanSetMode(mode);
+            _orientSince = now;
+            // SAS on first: KSP refuses the mode while SAS is off, and for a moment after the
+            // carrier leaves time warp. AdvanceOrient keeps trying for a few seconds.
+            _carrier.ActionGroups.SetGroup(KSPActionGroup.SAS, true);
+            _orienting = axis != Vector3.zero;
             if (!_orienting)
             {
-                Log($"Can't point {mode}: releasing {Sat(k)} without orienting " +
-                    $"({VesselParts.ControlReport(_carrier)}).");
+                Log($"No separation axis for {Sat(k)}: releasing without orienting.");
                 return;
             }
-            _carrier.ActionGroups.SetGroup(KSPActionGroup.SAS, true);
-            ap.SetMode(mode);
-            Log($"Pointing {mode} so {Sat(k)}'s separation push is perpendicular to the velocity.");
+            _modeSet = ap.CanSetMode(mode);
+            if (_modeSet) ap.SetMode(mode);
+            Log($"Pointing {mode} so {Sat(k)}'s separation push is perpendicular to the velocity" +
+                (_modeSet ? "." : " (waiting for SAS to accept the mode)."));
         }
 
         private bool AdvanceOrient(int k, double now)
@@ -471,6 +491,23 @@ namespace RelayOrbiter.Plugin
             if (!_orienting) return true;
             // KSP drops the mode if SAS wasn't on yet when it was set: keep applying it.
             _carrier.ActionGroups.SetGroup(KSPActionGroup.SAS, true);
+            if (!_modeSet)
+            {
+                _modeSet = _carrier.Autopilot.CanSetMode(_orientMode);
+                if (!_modeSet)
+                {
+                    if (now - _orientSince < OrientSasWait)
+                    {
+                        Status = $"Waiting for SAS to accept {_orientMode}";
+                        return false;
+                    }
+                    Log($"Can't point {_orientMode}: releasing {Sat(k)} without orienting " +
+                        $"({VesselParts.ControlReport(_carrier)}).");
+                    _orienting = false;
+                    return true;
+                }
+                Log($"SAS accepted {_orientMode} after {now - _orientSince:F1} s.");
+            }
             if (_carrier.Autopilot.Mode != _orientMode) _carrier.Autopilot.SetMode(_orientMode);
             double angle = Vector3.Angle(SeparationAxis(k), (Vector3)_carrier.obt_velocity);
             bool still = _carrier.angularVelocity.magnitude < MaxSpinRate;
@@ -606,9 +643,24 @@ namespace RelayOrbiter.Plugin
         {
             if (_carrier.packed) { Status = "Waiting for physics"; return false; }
             var sat = SatelliteVessel(k);
-            if (sat == null || sat == _carrier) { Fail($"{Sat(k)} did not separate."); return false; }
+            if (sat == null || sat == _carrier)
+            {
+                // The split into two vessels can take a few physics frames (docking ports,
+                // a carrier that just left time warp): wait for it before calling it a failure.
+                if (now - _clearStart < SeparationTimeout) { Status = $"Waiting for {Sat(k)} to separate"; return false; }
+                Fail($"{Sat(k)} did not separate.");
+                return false;
+            }
 
             if (PushAway(sat, now)) return false;
+            if (_clearMode == null && now - _clearStart >= ClearDelay)
+            {
+                // SAS may not have been ready when the step began: pick the mode now.
+                var mode = _orientMode == VesselAutopilot.AutopilotMode.Normal
+                    ? VesselAutopilot.AutopilotMode.Prograde : VesselAutopilot.AutopilotMode.Normal;
+                _carrier.ActionGroups.SetGroup(KSPActionGroup.SAS, true);
+                if (_carrier.Autopilot.CanSetMode(mode)) _clearMode = mode;
+            }
             if (_clearMode != null && now - _clearStart >= ClearDelay)
             {
                 _carrier.ActionGroups.SetGroup(KSPActionGroup.SAS, true);
@@ -921,6 +973,11 @@ namespace RelayOrbiter.Plugin
                 $"({search.Evaluations} predictions).");
         }
 
+        // Parts of the satellites not released yet (their separators excluded).
+        private IEnumerable<uint> SatellitesStillAboard() =>
+            Enumerable.Range(_lastReleased + 1, Math.Max(0, _separators.Length - _lastReleased - 1))
+                      .SelectMany(k => _satellitePartIds[k]);
+
         // Parts the carrier must never stage away: the satellites not released yet,
         // with their separators.
         private ISet<uint> SatellitesOnBoard()
@@ -1025,6 +1082,12 @@ namespace RelayOrbiter.Plugin
 
         private void Stop()
         {
+            // Stopped early: the satellites still on board get their engines back.
+            if (_carrier != null && _carrier.loaded)
+            {
+                int freed = VesselParts.HoldEngines(_carrier, SatellitesStillAboard(), false);
+                if (freed > 0) Log($"{freed} satellite engine(s) enabled again.");
+            }
             StopRcs();
             RestoreRanges();
             _executor?.Finish();

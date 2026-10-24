@@ -46,7 +46,7 @@ namespace RelayOrbiter.Plugin
 
             s.label.padding  = new RectOffset(2, 2, 2, 2);
             s.label.margin   = new RectOffset(2, 2, 1, 1);
-            s.label.wordWrap = false;
+            s.label.wordWrap = true;  // long notes wrap instead of being cut at the window's edge
 
             // Buttons double as tabs and toolbars: the selected one ("on") is the accent colour.
             s.button.normal.background   = Tex(Control, ControlEdge);

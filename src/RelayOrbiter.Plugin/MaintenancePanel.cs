@@ -85,7 +85,7 @@ namespace RelayOrbiter.Plugin
             var candidates = Candidates(vessel);
             if (_forVessel != vessel.persistentId) Suggest(vessel, candidates);
 
-            _byPlane = GUILayout.Toolbar(_byPlane ? 1 : 0, new[] { "Group by name", "Group by plane" }) == 1;
+            _byPlane = Choice.Draw(null, _byPlane ? 1 : 0, new[] { "Group by name", "Group by plane" }) == 1;
             if (_byPlane) { DrawPlaneGroup(body, vessel, candidates); return; }
 
             // ── The constellation ──
@@ -166,6 +166,7 @@ namespace RelayOrbiter.Plugin
             _matchPlanes = GUILayout.Toggle(_matchPlanes, "Match the orbital planes too (plane change first)");
             NodeExecutor.AutoActivateEngines = GUILayout.Toggle(NodeExecutor.AutoActivateEngines,
                 "Activate the satellites' engines when none is running before a burn");
+            Warp.Enabled = GUILayout.Toggle(Warp.Enabled, "Use time warp (off: you warp, burns still start on time)");
             if (_matchPlanes)
             {
                 var plane = CommonPlane(members, reference, null);
@@ -440,10 +441,7 @@ namespace RelayOrbiter.Plugin
                 return true;
             }
             double suggested = SuggestedSma(body, members, null, active) - body.Radius;
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Final altitude", GUILayout.Width(LabelW));
-            int mode = GUILayout.Toolbar(_customAltitude ? 1 : 0, new[] { "Suggested", "Custom" });
-            GUILayout.EndHorizontal();
+            int mode = Choice.Draw("Final altitude", _customAltitude ? 1 : 0, new[] { "Suggested", "Custom" });
             if (mode == 1 && !_customAltitude)
                 _customKm = (suggested / 1000.0).ToString("F0", CultureInfo.InvariantCulture);
             _customAltitude = mode == 1;

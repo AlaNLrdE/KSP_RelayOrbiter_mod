@@ -11,9 +11,14 @@ namespace RelayOrbiter.Plugin
 
         private float _nextAttempt;
 
+        // The player's setting: off, Relay Orbiter never time-warps (waits run at the
+        // player's own warp; a burn still drops out of warp on time).
+        public static bool Enabled = true;
+
         // Call every frame while waiting for targetUT.
         public void Towards(double targetUT)
         {
+            if (!Enabled) return;
             double now = Planetarium.GetUniversalTime();
             if (now >= targetUT - Margin || TimeWarp.CurrentRateIndex > 0) return;
             if (Time.realtimeSinceStartup < _nextAttempt) return;

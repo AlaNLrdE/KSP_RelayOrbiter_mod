@@ -15,6 +15,10 @@ namespace RelayOrbiter.Plugin
         // Rename the satellites ("Kerbin Orion 2/6 - SYNC") and mark them as relays.
         public bool   NameSatellites    { get; set; } = true;
 
+        // Launches: the orbit to launch to (km; NaN: automatic) and who flies the ascent.
+        public double LaunchAltitudeKm  { get; set; } = double.NaN;
+        public bool   MechJebAscent     { get; set; }
+
         public int Satellites
         {
             get => _satellites;

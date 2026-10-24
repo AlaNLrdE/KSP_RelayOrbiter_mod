@@ -33,10 +33,7 @@ namespace RelayOrbiter.Plugin
         // True when a shape other than a ring is selected.
         private bool DrawShapeSelector()
         {
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Shape", _header, GUILayout.Width(80f));
-            int k = GUILayout.SelectionGrid(Array.IndexOf(Kinds, _shape), KindNames, 4);
-            GUILayout.EndHorizontal();
+            int k = Choice.Draw("Shape", Array.IndexOf(Kinds, _shape), KindNames, 80f);
             if (Kinds[k] != _shape)
             {
                 _shape = Kinds[k];
@@ -147,6 +144,7 @@ namespace RelayOrbiter.Plugin
 
             NodeExecutor.AutoActivateEngines = GUILayout.Toggle(NodeExecutor.AutoActivateEngines,
                 "Activate the satellites' engines when none is running before a burn");
+            Warp.Enabled = GUILayout.Toggle(Warp.Enabled, "Use time warp (off: you warp, burns still start on time)");
             GUILayout.BeginHorizontal();
             GUILayout.Label("Phasing orbits (at least)", GUILayout.Width(LabelW));
             if (GUILayout.Button("−", GUILayout.Width(24f))) _minOrbits--;
