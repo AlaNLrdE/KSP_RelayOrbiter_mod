@@ -356,11 +356,8 @@ namespace RelayOrbiter.Plugin
         // a carrier can't deploy: launched one by one, then Maintenance puts each in its slot).
         private WalkerDeploy? DrawDeployShape(Vessel vessel, Body selected, CelestialBody? moon, int n, double rGoal)
         {
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Shape", GUILayout.Width(LabelW - 110f));
-            _deployShape = GUILayout.SelectionGrid(_deployShape,
-                new[] { "Ring", "Walker Δ plane", "Walker ★ plane", "Molniya, Tundra…" }, 2);
-            GUILayout.EndHorizontal();
+            _deployShape = Choice.Draw("Shape", _deployShape,
+                new[] { "Ring", "Walker Δ plane", "Walker ★ plane", "Molniya, Tundra…" }, 80f);
             if (_deployShape == DeployRing) { _goalPlane = null; return null; }
             if (_deployShape == DeployOnePerPlane)
             {
@@ -450,10 +447,8 @@ namespace RelayOrbiter.Plugin
             GUILayout.Label($"Trip to {GameBodyDatabase.NameOf(dest)}", _header);
             if (MechJebTransfer.Installed)
             {
-                GUILayout.BeginHorizontal();
-                GUILayout.Label("Transfer planner", GUILayout.Width(LabelW));
-                _useMechJeb = GUILayout.Toolbar(_useMechJeb ? 1 : 0, new[] { "Relay Orbiter (recommended)", "MechJeb 2" }) == 1;
-                GUILayout.EndHorizontal();
+                _useMechJeb = Choice.Draw("Transfer planner", _useMechJeb ? 1 : 0,
+                                          new[] { "Relay Orbiter (recommended)", "MechJeb 2" }) == 1;
                 if (_useMechJeb)
                     GUILayout.Label("MechJeb plans the ejection and the course corrections; Relay Orbiter flies them " +
                                     "and does the rest (falls back to its own planner if MechJeb can't).", _ok);
@@ -574,11 +569,8 @@ namespace RelayOrbiter.Plugin
             var mechJeb = MechJebAscent.Installed ? MechJebAscent.For(vessel) : null;
             if (mechJeb != null)
             {
-                GUILayout.BeginHorizontal();
-                GUILayout.Label("Ascent autopilot", GUILayout.Width(LabelW));
-                _settings.MechJebAscent = GUILayout.Toolbar(_settings.MechJebAscent ? 1 : 0,
+                _settings.MechJebAscent = Choice.Draw("Ascent autopilot", _settings.MechJebAscent ? 1 : 0,
                     new[] { "Relay Orbiter (recommended)", "MechJeb 2" }) == 1;
-                GUILayout.EndHorizontal();
             }
             bool useMechJeb = mechJeb != null && _settings.MechJebAscent;
 
@@ -671,10 +663,7 @@ namespace RelayOrbiter.Plugin
         private double? DrawLaunchAltitude(Body current, double autoAlt)
         {
             bool custom = !double.IsNaN(_settings.LaunchAltitudeKm);
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Launch to", GUILayout.Width(LabelW));
-            int mode = GUILayout.Toolbar(custom ? 1 : 0, new[] { $"Auto ({autoAlt / 1000.0:F0} km)", "Custom" });
-            GUILayout.EndHorizontal();
+            int mode = Choice.Draw("Launch to", custom ? 1 : 0, new[] { $"Auto ({autoAlt / 1000.0:F0} km)", "Custom" });
             if (mode == 0) { _settings.LaunchAltitudeKm = double.NaN; return autoAlt; }
             if (!custom)
             {
