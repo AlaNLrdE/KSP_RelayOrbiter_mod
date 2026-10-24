@@ -20,6 +20,9 @@ namespace RelayOrbiter.Plugin
         private NodeExecutor? _executor;
         private float _throttle;
         private bool _attached, _stopped;
+        private double _nextReport, _noThrustSince = double.NaN;
+        private const double ReportEvery = 20.0;      // s between ascent log lines
+        private const double NoThrustTimeout = 10.0;  // s wanting thrust without any
 
         public AscentAutopilot(Vessel vessel, double altitude, double inclinationDeg, IEnumerable<uint> protectedParts,
                                LaunchStaging staging, IDeploymentPlanner planner, Func<double, string> formatTime)
@@ -69,6 +72,30 @@ namespace RelayOrbiter.Plugin
             _staging.Tick(vessel, _throttle);
             var o = vessel.orbit;
             var command = _guidance.Update(vessel.altitude, vessel.srfSpeed, o.ApA, o.timeToAp);
+            var (thrust, _) = VesselParts.ActiveEngines(vessel);
+            double now = Time.time;
+            if (now >= _nextReport)
+            {
+                _nextReport = now + ReportEvery;
+                Debug.Log($"[RelayOrbiter] Ascent: {command.Phase}, altitude {vessel.altitude / 1000.0:F1} km, apoapsis " +
+                          $"{o.ApA / 1000.0:F1} km, pitch {command.PitchDeg:F0}°, throttle {_throttle:F2}, " +
+                          $"thrust {thrust:F0} kN, q {vessel.dynamicPressurekPa:F1} kPa, " +
+                          $"angle of attack {Vector3.Angle(_vessel.ReferenceTransform.up, (Vector3)_vessel.srf_velocity):F1}°, " +
+                          $"stage {VesselParts.CurrentStage(vessel)}.");
+            }
+            // Thrust wanted but none for a while, nothing left to stage: say so, don't coast on.
+            if (command.Throttle > 0.0 && thrust <= 0.0)
+            {
+                if (double.IsNaN(_noThrustSince)) _noThrustSince = now;
+                else if (now - _noThrustSince > NoThrustTimeout)
+                {
+                    Fail($"no thrust for {NoThrustTimeout:F0} s with the apoapsis at {o.ApA / 1000.0:F1} km " +
+                         $"(target {_targetAltitude / 1000.0:F0} km): the carrier's stages are spent, or its engine " +
+                         "didn't light. Check the staging; the satellites' stages are never fired.");
+                    return;
+                }
+            }
+            else _noThrustSince = double.NaN;
             if (command.Phase == AscentPhase.Circularize)
             {
                 _throttle = 0f;
@@ -76,9 +103,11 @@ namespace RelayOrbiter.Plugin
                 PlanCircularization();
                 return;
             }
-            _throttle = (float)command.Throttle;
-            if (command.Phase == AscentPhase.Coast) Point(_vessel.obt_velocity.normalized);  // least drag
-            else Point(Direction(command.PitchDeg));
+            double q = vessel.dynamicPressurekPa;
+            _throttle = (float)AscentGuidance.LimitThrottle(command.Throttle, q);
+            var wanted = command.Phase == AscentPhase.Coast ? _vessel.obt_velocity.normalized  // least drag
+                                                            : Direction(command.PitchDeg);
+            Point(LimitAoA(wanted, AscentGuidance.AllowedAoADeg(q)));
             Status = $"{Describe(command.Phase)}: pitch {command.PitchDeg:F0}°, heading {_headingDeg:F0}°, apoapsis " +
                      $"{o.ApA / 1000.0:F1} of {_targetAltitude / 1000.0:F0} km";
         }
@@ -115,6 +144,17 @@ namespace RelayOrbiter.Plugin
             var up = _vessel.upAxis;
             var horizontal = (_vessel.north * Math.Cos(h) + _vessel.east * Math.Sin(h)).normalized;
             return (up * Math.Sin(p) + horizontal * Math.Cos(p)).normalized;
+        }
+
+        // The wanted direction, but no further than maxDeg from the surface velocity: the
+        // turn then follows the trajectory (a true gravity turn) instead of forcing it.
+        private Vector3d LimitAoA(Vector3d wanted, double maxDeg)
+        {
+            var airflow = _vessel.srf_velocity;
+            if (maxDeg >= 180.0 || airflow.magnitude < 1.0) return wanted;
+            var limited = Vector3.RotateTowards((Vector3)airflow.normalized, (Vector3)wanted,
+                                                (float)(maxDeg * Math.PI / 180.0), 0f);
+            return ((Vector3d)limited).normalized;
         }
 
         // Hold the nose along dir with KSP's SAS (stability assist, locked rotation).

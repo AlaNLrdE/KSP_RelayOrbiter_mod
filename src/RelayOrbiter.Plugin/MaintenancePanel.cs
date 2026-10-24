@@ -14,6 +14,7 @@ namespace RelayOrbiter.Plugin
     internal sealed partial class MaintenancePanel
     {
         private const float LabelW = 230f;
+        private const double RingSpreadWarning = 20.0;  // degrees between members' planes
         private const int   NameChars = 30;
 
         private readonly IOrbitalMechanics    _mechanics;
@@ -141,6 +142,10 @@ namespace RelayOrbiter.Plugin
             EndList(candidates.Count);
             if (members.Count > _slots) { Warn($"{members.Count} satellites don't fit in {_slots} slots."); return; }
             if (members.Count < 2) { Warn("Tick at least two satellites."); return; }
+            double spread = PlaneGrouping.Spread(members.Select(v => new OrbitPlane(v.orbit.inclination, v.orbit.LAN)).ToList());
+            if (spread > RingSpreadWarning)
+                Warn($"These satellites are in planes up to {spread:F0}° apart: one ring can't hold them without huge " +
+                     "plane changes. Untick the others, use Group by plane to split them, or pick a Walker shape.");
 
             if (GUILayout.Button("Reference: " + (reference.HasValue
                     ? Short(members[reference.Value].vesselName) + " (stays put)"
@@ -161,6 +166,7 @@ namespace RelayOrbiter.Plugin
             _matchPlanes = GUILayout.Toggle(_matchPlanes, "Match the orbital planes too (plane change first)");
             NodeExecutor.AutoActivateEngines = GUILayout.Toggle(NodeExecutor.AutoActivateEngines,
                 "Activate the satellites' engines when none is running before a burn");
+            Warp.Enabled = GUILayout.Toggle(Warp.Enabled, "Use time warp (off: you warp, burns still start on time)");
             if (_matchPlanes)
             {
                 var plane = CommonPlane(members, reference, null);

@@ -45,11 +45,29 @@ namespace RelayOrbiter.Core
             return Math.Atan2(Math.Sqrt(cx * cx + cy * cy + cz * cz), ax * bx + ay * by + az * bz) * 180.0 / Math.PI;
         }
 
-        // The planes within toleranceDeg of the seed's, the seed included.
-        public static IReadOnlyList<int> SamePlane(IReadOnlyList<OrbitPlane> planes, int seed, double toleranceDeg) =>
-            Enumerable.Range(0, planes.Count)
-                      .Where(i => RelativeInclinationDeg(planes[seed], planes[i]) <= toleranceDeg)
-                      .ToList();
+        // The planes within toleranceDeg of each other, grown from the seed: the
+        // closest to the seed first, each one only when it is within the tolerance of
+        // every plane already in. (Within the tolerance of the seed alone is not enough:
+        // two planes 45° from it on opposite sides are 90° apart.)
+        public static IReadOnlyList<int> SamePlane(IReadOnlyList<OrbitPlane> planes, int seed, double toleranceDeg)
+        {
+            var group = new List<int> { seed };
+            foreach (int i in Enumerable.Range(0, planes.Count)
+                                        .Where(i => i != seed)
+                                        .OrderBy(i => RelativeInclinationDeg(planes[seed], planes[i])))
+                if (Fits(planes, group, i, toleranceDeg)) group.Add(i);
+            group.Sort();
+            return group;
+        }
+
+        // Plane i is within the tolerance of every plane of the group.
+        public static bool Fits(IReadOnlyList<OrbitPlane> planes, IEnumerable<int> group, int i, double toleranceDeg) =>
+            group.All(j => RelativeInclinationDeg(planes[i], planes[j]) <= toleranceDeg);
+
+        // The largest angle between two of the planes.
+        public static double Spread(IReadOnlyList<OrbitPlane> planes) =>
+            planes.Count < 2 ? 0.0
+            : planes.Max(a => planes.Max(b => RelativeInclinationDeg(a, b)));
 
         // The members' current callsign when they already share one of ours,
         // otherwise the first one free around the body.

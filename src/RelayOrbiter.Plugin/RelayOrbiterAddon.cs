@@ -145,6 +145,7 @@ namespace RelayOrbiter.Plugin
             NodeExecutor.AutoActivateEngines = _config.GetValue("activateEngines", true);
             _settings.LaunchAltitudeKm = _config.GetValue("launchAltitudeKm", double.NaN);
             _settings.MechJebAscent = _config.GetValue("mechJebAscent", false);
+            Warp.Enabled = _config.GetValue("timeWarp", true);
         }
 
         private void SaveSettings()
@@ -160,6 +161,7 @@ namespace RelayOrbiter.Plugin
             _config.SetValue("activateEngines", NodeExecutor.AutoActivateEngines);
             _config.SetValue("launchAltitudeKm", _settings.LaunchAltitudeKm);
             _config.SetValue("mechJebAscent", _settings.MechJebAscent);
+            _config.SetValue("timeWarp", Warp.Enabled);
             _config.save();
         }
 

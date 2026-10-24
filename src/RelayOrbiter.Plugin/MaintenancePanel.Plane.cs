@@ -43,6 +43,10 @@ namespace RelayOrbiter.Plugin
                 SuggestPlane(vessel, candidates, planes, seed, tolerance);
 
             GUILayout.Label("Tick the members   plane difference · altitude", _header);
+            GUILayout.Label($"Every member must be within {tolerance:0.#}° of every other one: the others can't be " +
+                            "ticked (raise the tolerance, or untick the member that's in the way).", _ok);
+            var selectedIdx = Enumerable.Range(0, candidates.Count)
+                                        .Where(i => _planeSelected.Contains(candidates[i].persistentId)).ToList();
             BeginList(candidates.Count, ref _planeScroll);
             foreach (var v in candidates)
             {
@@ -50,7 +54,21 @@ namespace RelayOrbiter.Plugin
                 bool ticked = _planeSelected.Contains(v.persistentId);
                 double rel = PlaneGrouping.RelativeInclinationDeg(planes[seed], planes[i]);
                 string mark = v == vessel ? " (active)" : "";
-                bool on = GUILayout.Toggle(ticked, $"{Short(v.vesselName)}{mark}  {rel:F1}° · {Km(v.orbit.semiMajorAxis - body.Radius)}");
+                // A vessel joins only if it is within the tolerance of every member.
+                var others = selectedIdx.Where(j => j != i).ToList();
+                bool fits = PlaneGrouping.Fits(planes, others, i, tolerance);
+                string why = "";
+                if (!ticked && !fits)
+                {
+                    int worst = others.OrderByDescending(j => PlaneGrouping.RelativeInclinationDeg(planes[i], planes[j])).First();
+                    why = $"  (too far: {PlaneGrouping.RelativeInclinationDeg(planes[i], planes[worst]):F0}° from " +
+                          $"{Short(candidates[worst].vesselName)})";
+                }
+                bool wasEnabled = GUI.enabled;
+                GUI.enabled = wasEnabled && (ticked || fits);
+                bool on = GUILayout.Toggle(ticked, $"{Short(v.vesselName)}{mark}  {rel:F1}° · " +
+                                                   $"{Km(v.orbit.semiMajorAxis - body.Radius)}{why}");
+                GUI.enabled = wasEnabled;
                 if (on != ticked)
                 {
                     if (on) _planeSelected.Add(v.persistentId); else _planeSelected.Remove(v.persistentId);
@@ -71,10 +89,15 @@ namespace RelayOrbiter.Plugin
                     ? $"  {names[i]} (unchanged)"
                     : $"  {Short(members[i].vesselName)} → {names[i]}");
             EndList(members.Count);
-            double spread = members.Max(a => members.Max(b =>
-                PlaneGrouping.RelativeInclinationDeg(new OrbitPlane(a.orbit.inclination, a.orbit.LAN),
-                                                     new OrbitPlane(b.orbit.inclination, b.orbit.LAN))));
+            double spread = PlaneGrouping.Spread(members.Select(v => new OrbitPlane(v.orbit.inclination, v.orbit.LAN)).ToList());
             Row("Largest plane difference", $"{spread:F2}°", spread <= 1.0 ? _ok : _warn);
+            if (spread > tolerance + 1e-6)
+            {
+                // Only possible when the tolerance was lowered after ticking: never rename such a group.
+                Warn($"These members are up to {spread:F1}° apart, more than the {tolerance:0.#}° tolerance: " +
+                     "untick some or press Suggest again.");
+                return;
+            }
             if (spread > 1.0)
                 GUILayout.Label("Spacing them evenly doesn't change their planes: satellites in different planes " +
                                 "drift apart in places, and their names show the mean inclination.", _warn);

@@ -24,15 +24,28 @@ namespace RelayOrbiter.Core
     // 2. a pitch program by altitude, from vertical to horizontal at TurnEnd, full
     //    throttle until the apoapsis reaches the target;
     // 3. a coast (topping the apoapsis up while drag lowers it) until out of the
-    //    atmosphere and close to the apoapsis;
-    // 4. the circularization, flown as a maneuver node by the node executor.
+    //    atmosphere;
+    // 4. the circularization, planned as soon as the vessel is out of the atmosphere
+    //    (so it can point and time-warp to the burn), flown by the node executor.
     public sealed class AscentGuidance
     {
         public const double TurnStartAltitude = 1_000.0;  // m: straight up until here...
         public const double TurnStartSpeed    = 60.0;     // ...or this fast (m/s)
         public const double TurnShape         = 0.5;      // pitch = 90°·(1 − x^shape)
         public const double TopUpMargin       = 1_000.0;  // m: apoapsis this far below: burn again
-        public const double CircularizeLead   = 60.0;     // s to the apoapsis: hand over the burn
+        public const double MaxAoADeg         = 5.0;      // nose this close to the airflow while the air pushes
+        public const double AoAFreePressure   = 1.0;      // kPa: below this the angle of attack is free
+        public const double MaxPressure       = 30.0;     // kPa: throttle down above this
+
+        // Largest angle allowed between the nose and the surface velocity: tight while the
+        // air pushes (a big angle of attack tears weak joints off), free in near-vacuum.
+        public static double AllowedAoADeg(double dynamicPressureKPa) =>
+            dynamicPressureKPa < AoAFreePressure ? 180.0 : MaxAoADeg;
+
+        // Throttle limited so the dynamic pressure stays under MaxPressure.
+        public static double LimitThrottle(double throttle, double dynamicPressureKPa) =>
+            dynamicPressureKPa <= MaxPressure ? throttle
+            : Math.Max(0.1, throttle * MaxPressure / dynamicPressureKPa);
 
         private readonly double _target, _atmosphere, _turnEnd;
 
@@ -71,8 +84,8 @@ namespace RelayOrbiter.Core
                 bool topUp = altitude > _turnEnd && apoapsisAltitude > _target - TopUpMargin;
                 return new AscentCommand(AscentPhase.GravityTurn, pitch, topUp ? Math.Min(throttle, 0.2) : throttle);
             }
-            bool clear = altitude > _atmosphere;
-            if (clear && timeToApoapsis < CircularizeLead)
+            // Out of the air the apoapsis no longer drops: the circularization can be planned.
+            if (altitude > _atmosphere)
                 return new AscentCommand(AscentPhase.Circularize, 0.0, 0.0);
             return new AscentCommand(AscentPhase.Coast, pitch, 0.0);
         }
