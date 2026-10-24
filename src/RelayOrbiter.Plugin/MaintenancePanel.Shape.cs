@@ -145,6 +145,7 @@ namespace RelayOrbiter.Plugin
 
             NodeExecutor.AutoActivateEngines = GUILayout.Toggle(NodeExecutor.AutoActivateEngines,
                 "Activate the satellites' engines when none is running before a burn");
+            Warp.Enabled = GUILayout.Toggle(Warp.Enabled, "Use time warp (off: you warp, burns still start on time)");
             GUILayout.BeginHorizontal();
             GUILayout.Label("Phasing orbits (at least)", GUILayout.Width(LabelW));
             if (GUILayout.Button("−", GUILayout.Width(24f))) _minOrbits--;
