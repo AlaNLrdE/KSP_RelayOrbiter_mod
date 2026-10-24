@@ -364,7 +364,9 @@ namespace RelayOrbiter.Plugin
             if (r.State == MaintenanceRunner.RunState.Running)
             {
                 GUILayout.Label($"{r.Remaining} satellite(s) still to correct. Now: {r.CurrentStep}");
-                foreach (var line in r.Upcoming) GUILayout.Label("  " + line);
+                const int shown = 10;
+                foreach (var line in r.Upcoming.Take(shown)) GUILayout.Label("  " + line);
+                if (r.Upcoming.Count > shown) GUILayout.Label($"  … and {r.Upcoming.Count - shown} more");
             }
             GUILayout.Label(r.Status, r.State == MaintenanceRunner.RunState.Running ||
                                       r.State == MaintenanceRunner.RunState.Done ? _ok : _warn);

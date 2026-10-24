@@ -17,7 +17,8 @@ phase along it.
      - Equatorial or inclined coverage; what one carrier deploys.
    * - Walker Delta i:T/P/F
      - T satellites in P planes at inclination i, nodes 360°/P apart. In each plane
-       they are 360°/(T/P) apart; plane p is shifted p·F·360°/T ahead.
+       they are evenly spaced; plane p is shifted p·F·360°/T ahead. When T doesn't
+       split exactly into P planes, some planes take one satellite more.
      - Global coverage (GPS-like). For example 12:3/1 at 55°.
    * - Walker Star
      - The same with the nodes 180°/P apart, near-polar planes.
@@ -63,6 +64,20 @@ too far apart for one carrier: Molniya's three planes are about 100° from each 
 1. Launch each satellite on its own, in a low orbit close to its plane.
 2. In Maintenance, tick the constellation's satellites (the new one included).
 3. Pick the shape and press **Put … into its slot**.
+
+Big constellations
+------------------
+
+A constellation can have up to 120 slots: 96 satellites as a Walker Star of 8 planes of
+12, for instance.
+
+Every burn means switching to its satellite: a scene reload, pointing and the burn, a
+minute or two of real time each. Correcting a hundred satellites at once can therefore
+take hours. Do it **plane by plane**:
+
+1. Pick a **Reference** satellite that stays put, so every run uses the same slots.
+2. Press **Put plane k into the shape** (with **−** and **+** to pick the plane).
+3. Repeat for each plane.
 
 Putting satellites into a shape (Maintenance)
 ---------------------------------------------

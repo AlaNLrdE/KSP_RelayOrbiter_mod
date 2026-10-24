@@ -35,8 +35,54 @@ public class ConstellationShapeTests
     }
 
     [Fact]
-    public void PlanesMustSplitTheSatellitesEvenly() =>
-        Assert.Throws<ArgumentException>(() => ConstellationShapes.WalkerDelta(10, 3, 1, 55, Sma));
+    public void UnevenPlanesShareTheSatellitesAsEvenlyAsPossible()
+    {
+        // 10 in 3 planes: 4, 3, 3, each plane evenly spaced on its own.
+        var spec = ConstellationShapes.WalkerDelta(10, 3, 1, 55, Sma);
+        Assert.False(spec.Even);
+        var slots = ConstellationShapes.Slots(spec);
+        Assert.Equal(new[] { 4, 3, 3 }, Enumerable.Range(0, 3).Select(p => slots.Count(s => s.Plane == p)));
+        Assert.Equal(new[] { 0.0, 120.0, 240.0 },
+                     slots.Where(s => s.Plane == 1).Select(s => Math.Round(s.PhaseOffsetDeg - 36.0, 9)));
+        Assert.Equal(Enumerable.Range(0, 10), slots.Select(s => s.Index));
+    }
+
+    [Fact]
+    public void NinetySixSatellitesInSevenPlanes()
+    {
+        var spec = ConstellationShapes.WalkerStar(96, 7, 1, 88, Sma);
+        var slots = ConstellationShapes.Slots(spec);
+        Assert.Equal(96, slots.Count);
+        var counts = Enumerable.Range(0, 7).Select(p => slots.Count(s => s.Plane == p)).ToList();
+        Assert.True(counts.Max() - counts.Min() <= 1);
+        Assert.Equal(5 * 14 + 2 * 13, counts.Sum());
+    }
+
+    [Fact]
+    public void MorePlanesThanSatellitesIsAnError() =>
+        Assert.Throws<ArgumentException>(() => ConstellationShapes.WalkerDelta(3, 4, 0, 55, Sma));
+
+    [Fact]
+    public void FitsNinetySixSatellitesQuickly()
+    {
+        var spec = ConstellationShapes.WalkerStar(96, 8, 1, 88, Sma);
+        var members = Perfect(spec, 12.0, 80.0);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var fit = ShapeFit.Fit(spec, members);
+        watch.Stop();
+        Assert.All(fit.PhaseErrorsDeg, e => Assert.True(Math.Abs(e) < 1e-6));
+        Assert.Equal(96, fit.SlotOf.Distinct().Count());
+        Assert.True(watch.ElapsedMilliseconds < 2000, $"took {watch.ElapsedMilliseconds} ms");
+    }
+
+    [Fact]
+    public void UnevenWalkerFitsItsOwnSatellites()
+    {
+        var spec = ConstellationShapes.WalkerDelta(10, 3, 1, 55, Sma);
+        var fit = ShapeFit.Fit(spec, Perfect(spec, 0.0, 0.0));
+        Assert.All(fit.PhaseErrorsDeg, e => Assert.True(Math.Abs(e) < 1e-6));
+        Assert.All(fit.PlaneErrorsDeg, e => Assert.True(e < 1e-6));
+    }
 
     [Fact]
     public void MolniyaHasHalfTheRotationAndASafePeriapsis()

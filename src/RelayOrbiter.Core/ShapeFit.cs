@@ -71,6 +71,7 @@ namespace RelayOrbiter.Core
                     foreach (var p in planeOffsets)
                         lanCandidates.Add(StationKeeping.Mod360(members[i].Plane.LanDeg - p.LanOffsetDeg));
             if (lanCandidates.Count == 0) lanCandidates.Add(0.0);
+            lanCandidates = Distinct(lanCandidates);  // satellites sharing a plane give the same candidates
 
             int[]? bestPlanes = null;
             double bestLan = 0.0, bestPlaneCost = double.MaxValue;
@@ -89,6 +90,7 @@ namespace RelayOrbiter.Core
                     foreach (var s in slots.Where(s => s.Plane == planesOf[i]))
                         thetaCandidates.Add(StationKeeping.Mod360(members[i].ArgLatDeg - s.PhaseOffsetDeg));
             if (thetaCandidates.Count == 0) thetaCandidates.Add(0.0);
+            thetaCandidates = Distinct(thetaCandidates);
 
             int[]? bestSlots = null;
             double bestTheta = 0.0, bestPhaseCost = double.MaxValue;
@@ -123,6 +125,15 @@ namespace RelayOrbiter.Core
             return new ShapeAssignment(slots, bestLan, bestTheta, slotsOf, phaseErrors, planeErrors);
         }
 
+        // Candidates closer than this are the same one: with many satellites in few planes
+        // most candidates repeat, and each one costs a full assignment.
+        private const double CandidateStepDeg = 0.05;
+
+        private static List<double> Distinct(List<double> candidates) =>
+            candidates.GroupBy(c => (long)Math.Round(StationKeeping.Mod360(c) / CandidateStepDeg) %
+                                    (long)Math.Round(360.0 / CandidateStepDeg))
+                      .Select(g => g.First()).ToList();
+
         // Every satellite into the nearest plane that still has room, nearest pairs first.
         private static (int[] planeOf, double cost) AssignPlanes(ShapeSpec spec, List<SlotOrbit> planes,
                                                                 IReadOnlyList<ShapeMember> members, double lan0,
@@ -135,7 +146,7 @@ namespace RelayOrbiter.Core
                     pairs.Add((PlaneGrouping.RelativeInclinationDeg(members[i].Plane, ShapeAssignment.PlaneOf(p, lan0)),
                                i, p.Plane));
             var planeOf = Enumerable.Repeat(-1, m).ToArray();
-            var room = planes.ToDictionary(p => p.Plane, _ => spec.PerPlane);
+            var room = planes.ToDictionary(p => p.Plane, p => spec.InPlane(p.Plane));
             double cost = 0.0;
             // The reference goes first: it picks its own plane.
             foreach (var (angle, i, p) in pairs.OrderBy(x => x.member == first ? 0 : 1).ThenBy(x => x.angle))

@@ -22,6 +22,8 @@ namespace RelayOrbiter.Plugin
             { "Ring", "Walker Δ", "Walker ★", "Molniya", "Tundra", "Tetrahedron", "Trojans" };
 
         private ShapeKind _shape = ShapeKind.Ring;
+        private int _batchPlane;
+        private const int BigRun = 24;  // satellites: more than this in one run takes a long time
         private int _planes = 3, _phasingF = 1, _moonIndex;
         private string _shapeIncText = "55", _periapsisKmText = "";
         private ShapeAssignment? _shapeFit;
@@ -163,6 +165,35 @@ namespace RelayOrbiter.Plugin
                 _runner = new MaintenanceRunner(state, false, _transfer, _phasing, _planner, _formatTime);
                 return;
             }
+            // Big constellations: one plane per run (each burn means a vessel switch, so all
+            // of them at once can take hours). A fixed reference keeps the same slots between runs.
+            if (spec.Planes > 1 && !spec.OnePerPlane)
+            {
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("−", GUILayout.Width(24f))) _batchPlane--;
+                _batchPlane = Mathf.Clamp(_batchPlane, 0, spec.Planes - 1);
+                int inBatch = Enumerable.Range(0, members.Count).Count(i => fit.SlotFor(i).Plane == _batchPlane);
+                bool put = GUILayout.Button($"Put plane {_batchPlane + 1} into the shape ({inBatch} satellite(s))");
+                if (GUILayout.Button("+", GUILayout.Width(24f))) _batchPlane++;
+                _batchPlane = Mathf.Clamp(_batchPlane, 0, spec.Planes - 1);
+                GUILayout.EndHorizontal();
+                if (!reference.HasValue)
+                    GUILayout.Label("Plane by plane: pick a Reference first (one satellite that stays put), so every run " +
+                                    "uses the same slots.", _warn);
+                if (put && inBatch > 0)
+                {
+                    var fresh = FitShape(spec, members, reference, null, moon, now);
+                    var state = StartShape(body, members, fresh, period, reference, moon);
+                    for (int i = 0; i < members.Count; ++i)
+                        if (fresh.SlotFor(i).Plane != _batchPlane) state.Stage[i] = CorrectionStage.Done;
+                    Debug.Log($"[RelayOrbiter] Correcting plane {_batchPlane + 1} of {spec.Planes}: {inBatch} satellite(s).");
+                    _runner = new MaintenanceRunner(state, false, _transfer, _phasing, _planner, _formatTime);
+                    return;
+                }
+            }
+            if (members.Count > BigRun)
+                GUILayout.Label($"{members.Count} satellites at once: every burn switches vessel (a minute or two " +
+                                "each), so this can take hours of real time. Plane by plane is easier to follow.", _warn);
             if (GUILayout.Button("Put every satellite into the shape"))
             {
                 var state = StartShape(body, members, FitShape(spec, members, reference, null, moon, now), period,
@@ -199,15 +230,16 @@ namespace RelayOrbiter.Plugin
                 case ShapeKind.WalkerDelta:
                 case ShapeKind.WalkerStar:
                 {
-                    var divisors = Enumerable.Range(1, _slots).Where(d => _slots % d == 0).ToList();
-                    int di = Math.Max(0, divisors.IndexOf(_planes));
-                    if (!divisors.Contains(_planes)) _planes = divisors[Math.Min(divisors.Count - 1, 1)];
+                    // Any number of planes: when they don't split exactly, as even as possible.
                     GUILayout.BeginHorizontal();
                     GUILayout.Label("Planes", GUILayout.Width(LabelW));
-                    if (GUILayout.Button("−", GUILayout.Width(24f))) _planes = divisors[Math.Max(0, di - 1)];
+                    if (GUILayout.Button("−", GUILayout.Width(24f))) _planes--;
+                    _planes = Mathf.Clamp(_planes, 1, _slots);
                     GUILayout.Label(_planes.ToString(CultureInfo.InvariantCulture), GUILayout.Width(24f));
-                    if (GUILayout.Button("+", GUILayout.Width(24f))) _planes = divisors[Math.Min(divisors.Count - 1, di + 1)];
-                    GUILayout.Label($"{_slots / _planes} per plane");
+                    if (GUILayout.Button("+", GUILayout.Width(24f))) _planes++;
+                    _planes = Mathf.Clamp(_planes, 1, _slots);
+                    GUILayout.Label(_slots % _planes == 0 ? $"{_slots / _planes} per plane"
+                        : $"{_slots / _planes + 1} in {_slots % _planes} plane(s), {_slots / _planes} in the others");
                     GUILayout.EndHorizontal();
                     GUILayout.BeginHorizontal();
                     GUILayout.Label("Phasing F (between planes)", GUILayout.Width(LabelW));

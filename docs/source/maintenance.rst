@@ -28,7 +28,7 @@ the active vessel's name:
   slots as the highest number (or the number of satellites). The window says it was
   guessed: check it.
 
-Tick or untick satellites to correct the suggestion, set the number of **Slots** (2 to 36: bigger than one carrier deploys)
+Tick or untick satellites to correct the suggestion, set the number of **Slots** (2 to 120: bigger than one carrier deploys)
 (empty slots are fine: a satellite can be missing), and press **Suggest again** to
 start over. The list shows, for each member, its slot, how far it is off and its
 drift per orbit.
